@@ -251,7 +251,8 @@ def qlp_min_length(H, c, rank_tol=1e-10):
 
 
 def gmres_qlp_core(
-    matvec, b, rtol=1e-6, maxit=0, rank_tol=1e-10, check_every=5, reorth=True
+    matvec, b, rtol=1e-6, maxit=0, rank_tol=1e-10, check_every=5, reorth=True,
+    residual_check=None,
 ):
     """Solve matvec(x)=b (possibly nonsymmetric/singular). Returns (x, iters, rel)."""
     b = np.asarray(b, float)
@@ -284,7 +285,9 @@ def gmres_qlp_core(
             y, _ = qlp_min_length(Hbar, rhs, rank_tol=rank_tol)
             x = V[:, :m] @ y
             rel = np.linalg.norm(Hbar @ y - rhs) / nrm_b
-            if rel <= rtol:
+            # The Arnoldi least-squares residual belongs to the preconditioned
+            # system. A supplied physical-residual check owns termination.
+            if residual_check(x) if residual_check is not None else rel <= rtol:
                 return x, m, rel
         if hjp <= rank_tol:  # happy/invariant breakdown
             return x, m, rel
@@ -303,45 +306,73 @@ def _info(iters, matvecs, fac, hist, cap):
     )
 
 
+def _certify_residual(info, residual, rhs, tol):
+    """Condition (13), in the original coordinates, with an absolute zero-RHS test."""
+    norm = float(np.linalg.norm(residual))
+    rhs_norm = float(np.linalg.norm(rhs))
+    threshold = float(tol * rhs_norm)
+    info.update(
+        residual_norm=norm,
+        rhs_norm=rhs_norm,
+        residual_threshold=threshold,
+        relative_residual=norm / rhs_norm if rhs_norm else (0.0 if norm == 0 else float("inf")),
+        converged=bool(np.isfinite(norm) and norm <= threshold),
+    )
+    return info
+
+
 def solve_direct(Gamma, rhs, **kw):
     d = spla.spsolve(sp.csc_matrix(Gamma), rhs)
-    return d, _info(1, 0, 1, None, False)
+    info = _certify_residual(_info(1, 1, 1, None, False), Gamma @ d - rhs, rhs, kw.get("tol", 1e-12))
+    return d, info
 
 
 def solve_gmres_qlp(Gamma, rhs, tol, max_iters, M=None, x0=None, rank_tol=1e-12, **kw):
-    """Solve the left-preconditioned system with GMRES-QLP.
+    """Left-preconditioned Arnoldi, terminated by ||Gamma d-rhs|| <= tol||rhs||.
 
-    Warm-start corrections use a rescaled tolerance for the full residual."""
-    if M is None:
+    Every candidate and warm start is checked in the original coordinates.
+    Failed convergence (including breakdown) is explicit in info['converged'].
+    """
+    rhs = np.asarray(rhs, float)
+    rhs_norm = np.linalg.norm(rhs)
+    base = np.zeros_like(rhs) if x0 is None or rhs_norm == 0 else np.array(x0, float)
+    mv, pc = 0, 0
+    history = []
 
-        def matvec(v):
-            return Gamma @ v
+    def physical_matvec(v):
+        nonlocal mv
+        mv += 1
+        return Gamma @ v
 
-        b = np.asarray(rhs, float)
+    def apply(v):
+        nonlocal pc
+        if M is None:
+            return v
+        pc += 1
+        return M(v)
+
+    def check(delta):
+        residual = physical_matvec(base + delta) - rhs
+        norm = np.linalg.norm(residual)
+        history.append(float(norm / rhs_norm) if rhs_norm else float(norm))
+        return bool(np.isfinite(norm) and norm <= tol * rhs_norm)
+
+    residual0 = rhs - physical_matvec(base)
+    if np.linalg.norm(residual0) <= tol * rhs_norm:
+        delta, it = np.zeros_like(rhs), 0
     else:
-        applyP = M.__call__ if hasattr(M, "__call__") else M
-
-        def matvec(v):
-            return applyP(Gamma @ v)
-
-        b = applyP(np.asarray(rhs, float))
-    if x0 is None or not np.any(x0):
-        x, it, rel = gmres_qlp_core(
-            matvec, b, rtol=tol, maxit=max_iters, rank_tol=rank_tol, check_every=5
+        delta, it, _ = gmres_qlp_core(
+            lambda v: apply(physical_matvec(v)), apply(residual0),
+            maxit=max_iters, rank_tol=rank_tol, check_every=5, residual_check=check,
         )
-        return x, _info(it, it, 0, None, (it >= max_iters and rel > tol))
-    # warm start from x0
-    nrm_b = np.linalg.norm(b)
-    r0 = b - matvec(x0)  # 1 extra matvec
-    nrm_r0 = np.linalg.norm(r0)
-    if nrm_b == 0.0 or nrm_r0 <= tol * nrm_b:  # x0 already accurate enough
-        return np.asarray(x0, float), _info(0, 1, 0, None, False)
-    rtol_eff = min(1.0, tol * nrm_b / nrm_r0)  # so ‖M(Γδ)−r0‖ ≤ tol·‖b‖
-    delta, it, rel = gmres_qlp_core(
-        matvec, r0, rtol=rtol_eff, maxit=max_iters, rank_tol=rank_tol, check_every=5
-    )
-    rel_true = rel * nrm_r0 / nrm_b  # ‖M(Γx)−b‖/‖b‖
-    return x0 + delta, _info(it, it + 1, 0, None, (it >= max_iters and rel_true > tol))
+    d = base + delta
+    residual = physical_matvec(d) - rhs
+    info = _certify_residual(_info(it, mv, 0, history, False), residual, rhs, tol)
+    info['cap_hit'] = bool(it >= max_iters and not info['converged'])
+    info['termination'] = 'converged' if info['converged'] else ('max_iters' if info['cap_hit'] else 'breakdown')
+    info['preconditioner_applications'] = pc
+    info['algo_flops'] = 2.0 * mv * Gamma.nnz + 2.0 * it * it * len(rhs)
+    return d, info
 
 
 def solve_minres(Gamma, rhs, tol, max_iters, M=None, **kw):
@@ -381,41 +412,47 @@ _SKETCH_RNG = np.random.default_rng(0)  # module-global: deterministic given cal
 def solve_sketch(Gamma, rhs, tol, max_iters, M=None, x0=None, restart=20, **kw):
     """Minimize a Gaussian-sketched residual over restarted power-basis cycles.
 
-    Uses left preconditioning and warm starts; checks the unsketched residual.
+    Uses left preconditioning and warm starts; checks the original, unsketched,
+    unpreconditioned residual against tol * ||rhs||.
     No certified subspace embedding is claimed. Preconditioner work is added by the caller."""
-    applyP = (
-        (lambda w: w) if M is None else (M.__call__ if hasattr(M, "__call__") else M)
-    )
-
-    def matvec(v):
-        return applyP(Gamma @ v)
-
-    b = applyP(np.asarray(rhs, float))
-    n = b.shape[0]
+    rhs = np.asarray(rhs, float)
+    n = rhs.shape[0]
     nnz = Gamma.nnz
-    bnorm = np.linalg.norm(b)
-    if bnorm == 0.0:
-        info = _info(0, 0, 0, None, False)
-        info["algo_flops"] = 0.0
-        return np.zeros(n), info
-    d = np.array(x0, float) if (x0 is not None and np.any(x0)) else np.zeros(n)
-    mv = 0
+    rhs_norm = np.linalg.norm(rhs)
+    d = np.array(x0, float) if x0 is not None and rhs_norm else np.zeros(n)
+    mv, pc = 0, 0
+    history = []
     algo_flops = 0.0
-    while mv < max_iters:
-        r0 = b - matvec(d)
-        mv += 1
-        rho = np.linalg.norm(r0)
-        if rho / bnorm <= tol:
+
+    def apply(v):
+        nonlocal pc
+        if M is None:
+            return v
+        pc += 1
+        return M(v)
+
+    # Cache the physical residual so each correction is certified even when
+    # the budget is exhausted. Reserve one matvec per cycle for this check.
+    residual = rhs - Gamma @ d
+    mv += 1
+    while True:
+        norm = np.linalg.norm(residual)
+        history.append(float(norm / rhs_norm) if rhs_norm else float(norm))
+        if np.isfinite(norm) and norm <= tol * rhs_norm:
             break
-        m = min(restart, max_iters - mv)
+        m = min(restart, max_iters - mv - 1)
         if m < 1:
+            break
+        r0 = apply(residual)
+        rho = np.linalg.norm(r0)
+        if not np.isfinite(rho) or rho == 0:
             break
         V = np.empty((n, m))
         AV = np.empty((n, m))
         v = r0 / rho
         for j in range(m):
             V[:, j] = v
-            w = matvec(v)
+            w = apply(Gamma @ v)
             mv += 1
             AV[:, j] = w
             v = w / (np.linalg.norm(w) + 1e-30)  # next power-basis vector
@@ -425,12 +462,14 @@ def solve_sketch(Gamma, rhs, tol, max_iters, M=None, x0=None, restart=20, **kw):
         )  # Dense Gaussian sketch; no certified embedding guarantee.
         y, *_ = np.linalg.lstsq(S @ AV, S @ r0, rcond=None)  # sketched least-squares
         d = d + V @ y
+        residual = rhs - Gamma @ d
+        mv += 1
         algo_flops += 2.0 * s * n * m + 2.0 * s * n + 2.0 * s * m * m + 2.0 * n * m
     algo_flops += 2.0 * mv * nnz  # Γ matvecs (precond apply added by caller)
-    rel = (
-        np.linalg.norm(b - matvec(d)) / bnorm
-    )  # diagnostic (uncounted, as in the Julia ref)
-    info = _info(mv, mv, 0, None, rel > tol)
+    info = _certify_residual(_info(mv, mv, 0, history, False), residual, rhs, tol)
+    info['cap_hit'] = bool(mv >= max_iters - 1 and not info['converged'])
+    info['termination'] = 'converged' if info['converged'] else ('max_iters' if info['cap_hit'] else 'breakdown')
+    info['preconditioner_applications'] = pc
     info["algo_flops"] = algo_flops
     return d, info
 
@@ -448,4 +487,10 @@ SOLVER_DISPATCH = {
 def solve(method, Gamma, rhs, tol, max_iters, M=None, **kw):
     if method not in SOLVER_DISPATCH:
         raise ValueError(f"unknown solver: {method}; options: {list(SOLVER_DISPATCH)}")
-    return SOLVER_DISPATCH[method](Gamma, rhs, tol=tol, max_iters=max_iters, M=M, **kw)
+    if tol < 0 or not np.isfinite(tol) or max_iters < 1:
+        raise ValueError("tol must be finite and nonnegative; max_iters must be positive")
+    d, info = SOLVER_DISPATCH[method](Gamma, rhs, tol=tol, max_iters=max_iters, M=M, **kw)
+    if 'converged' not in info:
+        _certify_residual(info, Gamma @ d - rhs, rhs, tol)
+        info['matvecs'] += 1
+    return d, info

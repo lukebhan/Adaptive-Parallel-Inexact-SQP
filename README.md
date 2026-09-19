@@ -61,8 +61,47 @@ python experiments.py plot --archived --compile-tables
 Outputs go to `results/paper/`. Bundled records are in `data/*.json.gz`.
 Plots cover Figures 2–7 and Tables 1, 2, 4, 5, 6; Figure 1 and Table 3 are
 manuscript-only material, not experimental outputs.
-New runs use a 100-iteration inner cap; archived runs used 120. Use a fresh output
-root after changing settings to avoid reusing older records.
+New runs use a 100-iteration inner cap. Use a fresh output root after changing
+settings. Bundled data represents the earlier implementation and is retained
+for historical comparisons; it does not validate the corrected solver.
+
+### Corrected Hessian and residual checks
+
+Swing now uses the **full Lagrangian Hessian** with a stagewise eigenvalue
+floor of `1e-6` for the Newton system. The true, unshifted Hessian differentiates
+the augmented merit in both the descent test and Armijo slope. Gauss–Newton
+remains an optional direction model; it never supplies the merit derivative.
+
+Local convergence requires `norm(Gamma_i @ d_i - rhs_i) <= eps_i * norm(rhs_i)`
+in the original coordinates, including for warm starts and the sketch solver.
+Residual checks count toward work. Failed local solves, acceptance budgets,
+and line searches stop without applying the rejected direction. Swing keeps
+50 accuracy/descent passes, local iteration cap 100, and overlap cap 110.
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -v
+python experiments.py smoke
+python experiments/swing/run_corrected_study.py --workers 4
+```
+
+The corrected study reruns all 160 Swing Newton-method cases (120 fixed and
+40 adaptive), and reuses only the unchanged nonlinear baselines. Outputs and
+a full acceptance audit are in `results/corrected_swing/`; start with
+`report.md`. Sketch RNG seed zero is reset per case, independently of scheduling.
+The smoke check validates a converged corrected case and its local/global
+certificates, rather than comparing work against the old implementation.
+
+At these budgets, each adaptive inner solver converges on 14/20 cases:
+5/5 for M=4 and M=10, 3/5 for M=20, and 1/5 for M=50. The other cases stop at
+the acceptance-pass budget. No applied step violates its required local or
+adaptive global checks. Every recorded Hessian shift is zero in this Swing
+study; a vanishing modification is not guaranteed for general problems by a
+stagewise positive-definiteness rule.
+
+The prior cap-only experiment is preserved in `results/cap_study/`: changing
+six passes to 50 under the old implementation reduced ungated steps from
+77/188 to 15/179 but did not eliminate them. That historical experiment and
+its `run_pass_cap_study.py` driver require the pre-correction solver source.
 
 Solver code is in `src/newton/`. `python experiments.py --help`
 lists all commands, including verification and a quick solver check.

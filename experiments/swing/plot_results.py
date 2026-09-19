@@ -50,6 +50,7 @@ for f in glob.glob(os.path.join(REC, "*.json")):
     r["wall"] = r.get("wall_contended", float("nan"))
     D.append(r)
 idx = {(r["method"], r["b"], r["M"], r["seed"]): r for r in D}
+STRICT_RESULTS = any(r.get('schema', 0) >= 2 for r in D)
 
 plt.rcParams.update(
     {
@@ -151,22 +152,29 @@ def fig_convergence():
         ("FOTD-LU", 10, r"FOTD (LU) $b{=}10$", QLPC, ":", 2),
         ("Schwarz", 40, r"Schwarz $b{=}40$", PUR, "-.", 1),
     ]
+    lower_limit = 3e-8
     for a, M in zip(ax, M_COLS):
         for method, b, lab, c, ls, z in series:
             agg = conv_agg(method, b, M)
             if agg is None:
                 continue
             m, lo, hi = agg
+            lower_limit = min(lower_limit, float(np.min(lo)) * 0.5)
             x = np.arange(len(m))
             a.fill_between(x, lo, hi, color=c, alpha=0.15, lw=0, zorder=z - 0.5)
             a.semilogy(x, m, ls, color=c, lw=1.5, label=lab, zorder=z)
         a.axhline(CONV, color="k", ls=":", lw=0.9)
         a.set_title(rf"$M={M}$")
+        if STRICT_RESULTS:
+            group = runs('AOTD', None, M)
+            nconv = sum(r['converged'] for r in group)
+            a.text(.03, .06, rf"AOTD: {nconv}/{len(group)} converged", transform=a.transAxes,
+                   ha='left', va='bottom', fontsize=7)
         a.minorticks_off()
         a.grid(alpha=0.3, which="major", lw=0.4)
         a.set_xlabel(r"outer iteration $\tau$")
-        a.set_ylim(3e-8, 3e1)
-        a.set_yticks([1e-7, 1e-5, 1e-3, 1e-1, 1e1])  # every-other decade (5 ticks)
+        a.set_ylim(lower_limit, 3e1)
+        a.yaxis.set_major_locator(LogLocator(base=10, numticks=7))
     ax[0].set_ylabel(r"KKT residual $\|\nabla\mathcal{L}\|$")
     hh, ll = ax[0].get_legend_handles_labels()
     fig.tight_layout()
@@ -214,7 +222,7 @@ def fig_adaptation():
     ab.yaxis.set_major_locator(MaxNLocator(nbins=6, min_n_ticks=4))
     ae.set_ylabel(r"inner tol $\min_i\varepsilon_i$")
     ae.set_title(r"(b) tolerance adaptation")
-    ae.grid(alpha=0.3, which="both", lw=0.4)
+    ae.grid(alpha=0.3, which="major", lw=0.4)
     ae.set_xlabel(r"inner iteration (pass)")
     lo = (
         10 ** np.floor(np.log10(min(emins))) if emins else 1e-3
@@ -234,7 +242,7 @@ def fig_adaptation():
         return [
             r["flops"]
             for r in runs(method, b, M)
-            if r["kkt"] < CONV and np.isfinite(r.get("flops", np.nan))
+            if (STRICT_RESULTS or r["kkt"] < CONV) and np.isfinite(r.get("flops", np.nan))
         ]
 
     present = [s for s in cseries if any(conv_flops(s[0], s[1], M) for M in M_COLS)]
@@ -268,13 +276,17 @@ def fig_adaptation():
                 ln.set(color=c, lw=1.0)
             for md in bp["medians"]:
                 md.set(color=c, lw=1.7)
+            if STRICT_RESULTS:
+                failed = [r['flops'] for r in runs(method, b, M) if r['kkt'] >= CONV]
+                af.scatter([gi+dx]*len(failed), failed, marker='x', color=c,
+                           s=18, linewidths=1, zorder=5)
     af.set_yscale("log")
     af.set_xticks(range(len(M_COLS)))
     af.set_xticklabels(M_COLS)
     af.set_xlim(-0.6, len(M_COLS) - 0.4)
     af.set_ylabel(r"FLOPs")
     af.set_xlabel(r"$M$")
-    af.set_title(r"(c) comp.\ cost vs $M$")
+    af.set_title(r"(c) work spent ($\times$: failed)" if STRICT_RESULTS else r"(c) comp.\ cost vs $M$")
     af.grid(alpha=0.3, which="both", axis="y", lw=0.4)
     af.yaxis.set_major_locator(
         LogLocator(base=10, subs=(1.0, 3.0), numticks=12)
@@ -338,7 +350,9 @@ def cell(method, b, M):
         pwall_sd=float(np.nanstd(pw)),
         outer=float(np.mean([x["outer_iters"] for x in v])),
         inner=float(np.mean([x["inner_iters"] for x in v])),
-        conv=kkt < CONV,
+        conv=all(x['kkt'] < CONV for x in v) if STRICT_RESULTS else kkt < CONV,
+        n_converged=sum(x['kkt'] < CONV for x in v),
+        n_runs=len(v),
     )
 
 
@@ -396,7 +410,7 @@ def build_table(
         if c is None:
             return NA
         if not c["conv"]:
-            return STALL
+            return rf"{c['n_converged']}/{c['n_runs']} conv." if STRICT_RESULTS else STALL
         return value_fmt(c, M, best)
 
     def itf(spec, c):
@@ -518,6 +532,28 @@ AP_CAP = (
     r"CPU-contended, so $T_{\parallel}$ is indicative; FLOPs (Table~\ref{tab:swing_exp10_highlight}) is the "
     r"fair, machine-independent axis. Per column the best $T_{\parallel}$ among decomposed methods is bold."
 )
+
+if STRICT_RESULTS:
+    HL_CAP = (
+        r"Corrected NE39 swing comparison ($N=1000$, five initial-condition seeds). "
+        r"All Newton methods use the full Lagrangian Hessian with a stagewise eigenvalue "
+        r"floor of $10^{-6}$ for the solve, and the true Hessian for the merit derivative. "
+        r"Local residuals are checked in the original coordinates. Failed local solves, "
+        r"acceptance budgets or line searches terminate without applying a step. AOTD "
+        r"allows 50 passes; local iterative solvers allow 100 iterations/matvecs. "
+        r"Work includes residual-certification matvecs under the dominant-operation model. "
+        r"Numerical cells require all five runs to converge; otherwise the work cell reports "
+        r"the success count. Full failed-case residuals and work are retained in the accompanying "
+        r"CSV and figures. Bold denotes the lowest mean work among fully converged decomposed "
+        r"groups. Nonlinear baselines are unchanged archived runs."
+    )
+    AP_CAP = (
+        r"Timing companion for the corrected swing runs. Numerical cells require all five "
+        r"runs to converge; other cells give success counts. $T_{\parallel}$ is estimated "
+        r"from the longest local solve per pass plus serial phases, not measured distributed "
+        r"execution. Newton runs used concurrent workers; nonlinear baselines are archived "
+        r"under different execution conditions. These timings do not establish speedups."
+    )
 
 fig_convergence()
 fig_adaptation()

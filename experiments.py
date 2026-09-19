@@ -230,7 +230,7 @@ def run(args):
 
 
 def smoke():
-    # Fresh, real paper-size deterministic run, with independent archived numerical reference.
+    # Fresh paper-size case; historical work counts used incorrect acceptance tests.
     with tempfile.TemporaryDirectory(prefix="aotd-smoke-") as tmp:
         work = Path(tmp)
         code = """import importlib.util, json, sys
@@ -240,6 +240,12 @@ m=importlib.util.module_from_spec(s); s.loader.exec_module(m)
 r=m.run_one(("AOTD-rebuild",None,20,1))
 assert "error" not in r, r.get("error")
 assert r["converged"], r
+assert r["gauss_newton"] is False
+for t in r["trajectory"]:
+    assert t["step_applied"] and t["passes"][-1]["outcome"] == "accept"
+    for p in t["passes"]:
+        assert all(c["converged"] and c["residual_norm"] <= c["residual_threshold"]
+                   for c in p["local_solves"])
 print(json.dumps({k:r[k] for k in ("kkt","flops","outer_iters","inner_iters")}))
 """
         r = subprocess.run(
@@ -250,23 +256,15 @@ print(json.dumps({k:r[k] for k in ("kkt","flops","outer_iters","inner_iters")}))
                 str(ROOT / "experiments/swing/run_comparison.py"),
             ],
             cwd=work,
-            env=environment(work),
+            env={**environment(work), "AOTD_MAX_PASSES": "50"},
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=True,
         )
         actual = json.loads(r.stdout.strip().splitlines()[-1])
-        ref = archive("swing")["records/aotd_rebuild_M20_seed1.json"]
-        for k in ("flops", "outer_iters", "inner_iters"):
-            if actual[k] != ref[k]:
-                raise RuntimeError(f"Smoke regression {k}: {actual[k]} != {ref[k]}")
-        if abs(actual["kkt"] - ref["kkt"]) > max(1e-10, abs(ref["kkt"]) * 1e-3):
-            raise RuntimeError(
-                f"Smoke residual differs: {actual['kkt']} vs {ref['kkt']}"
-            )
         print(
-            "Fresh Swing N=1000, M=20, seed=1 matches archived work and iterations:",
+            "Corrected Swing N=1000, M=20, seed=1 converges with certified local residuals and accepted steps:",
             actual,
         )
 

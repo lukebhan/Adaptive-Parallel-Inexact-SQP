@@ -12,7 +12,6 @@ from .ComputeKKT import (
     n_kkt,
     stage_jacobians,
     constraint_jacobian,
-    constraint_residual,
     grad_lagrangian,
     hessian_blocks,
     modify_hessian_blocks,
@@ -65,8 +64,8 @@ class AlgorithmConfig:
     )
     ilu_drop_tol: float = 1e-2  # ILU-Schur drop tolerance (cost vs tol-sensitivity)
     max_inner_iters: int = 250
-    gauss_newton: bool = True
-    xi_H: float = 0.0
+    gauss_newton: bool = False  # Optional direction model only; merit always uses true H.
+    xi_H: float = 1e-6  # Positive stagewise eigenvalue floor for the direction model.
     warm_start: bool = (
         False  # warm-start each pass's inner solves from the previous pass
     )
@@ -110,6 +109,8 @@ def eps_max_value(eta1, eta2, beta, psi, upsilon, floor):
 
 
 def run_algorithm(prob, cfg, z0, lam0):
+    if cfg.max_inner_passes < 1 or cfg.max_inner_iters < 1:
+        raise ValueError("Inner pass and solver budgets must be positive")
     z = np.array(z0, float)
     lam = np.array(lam0, float)
     nz = n_z(prob)
@@ -166,9 +167,15 @@ def run_algorithm(prob, cfg, z0, lam0):
             stop_reason = "kkt"
             break
 
-        H_blocks = hessian_blocks(prob, z, lam, gauss_newton=cfg.gauss_newton)
-        H_mod, _, _, _ = modify_hessian_blocks(H_blocks, cfg.xi_H)
-        H_unmod = sp.block_diag([sp.csr_matrix(Hb) for Hb in H_blocks], format="csr")
+        H_true_blocks = hessian_blocks(prob, z, lam, gauss_newton=False)
+        H_true = sp.block_diag(H_true_blocks, format="csr")
+        H_model_blocks = (
+            hessian_blocks(prob, z, lam, gauss_newton=True)
+            if cfg.gauss_newton else H_true_blocks
+        )
+        H_mod, hessian_shifts, hessian_nmods, hessian_max_shift = modify_hessian_blocks(
+            H_model_blocks, cfg.xi_H
+        )
         Gamma_global = assemble_kkt(H_mod, G)
         Gamma_norm = spectral_norm_2(Gamma_global)
         T["assemble"] += time.perf_counter() - t_o
@@ -191,9 +198,11 @@ def run_algorithm(prob, cfg, z0, lam0):
         )
         _pc_cache = {}  # per-outer cache of (Gi, rhs_i, precond) keyed on (i, m1, m2)
         _bilu_cache = {}  # per-outer bordered-ILU state per subproblem i
+        local_checks = []
 
         def solve_all(bvec, epsvec, exact, warm=None):
-            nonlocal total_matvecs, total_inner_iters, total_flops
+            nonlocal total_matvecs, total_inner_iters, total_flops, local_checks
+            local_checks = []
             subs = build_subproblems(prob, knots, bvec, cfg.mu)
             local_dirs = []
             sub_flops = []  # per-subproblem FLOPs for this barrier
@@ -297,6 +306,15 @@ def run_algorithm(prob, cfg, z0, lam0):
                     restart=cfg.sketch_restart,
                     rank_tol=cfg.inner_rank_tol,
                 )
+                local_checks.append(dict(
+                    subproblem=i, tolerance=float(tol),
+                    residual_norm=info['residual_norm'],
+                    rhs_norm=info['rhs_norm'],
+                    residual_threshold=info['residual_threshold'],
+                    relative_residual=info['relative_residual'],
+                    converged=info['converged'], cap_hit=info['cap_hit'],
+                    iters=info['iters'], matvecs=info['matvecs'],
+                ))
                 # Rebuild reused factors if Krylov iterations exceed 1.7 times the fresh-build count.
                 if cfg.freeze_precond and i in _frozen_pc:
                     if _frozen_iters0.get(i) is None:
@@ -325,6 +343,7 @@ def run_algorithm(prob, cfg, z0, lam0):
                 ostat["inner_iters"] += info["iters"]
                 if info.get("factorizations", 0):  # direct solve
                     flop = banded_factor_flops(Gi.shape[0], 2 * bs.N_X + bs.N_U)
+                    flop += 2.0 * info["matvecs"] * Gi.nnz
                 else:  # gmres_qlp / minres / sketch
                     if (
                         "algo_flops" in info
@@ -335,9 +354,9 @@ def run_algorithm(prob, cfg, z0, lam0):
                     if M is not None and hasattr(
                         M, "apply_flops"
                     ):  # precond build (this pass) + apply per iter
-                        flop += (0.0 if reused else pc_build_flop) + info[
-                            "iters"
-                        ] * M.apply_flops
+                        flop += (0.0 if reused else pc_build_flop) + info.get(
+                            "preconditioner_applications", info["iters"]
+                        ) * M.apply_flops
                 total_flops += flop
                 ostat["flops"] += flop
                 sub_flops.append(float(flop))
@@ -362,6 +381,13 @@ def run_algorithm(prob, cfg, z0, lam0):
             # FOTD: one exact solve per outer
             dz, dl = solve_all(b_list, eps_i_list, exact=True)
             direction = np.concatenate([dz, dl])
+            pass_log.append(dict(
+                pass_idx=0, b_used=list(b_list), eps_used=list(eps_i_list),
+                local_solves=local_checks,
+                outcome="fixed_solve" if all(c['converged'] for c in local_checks) else "local_fail",
+                pass_flops=float(ostat['flops']),
+                pass_matvecs=ostat['matvecs'], pass_inner_iters=ostat['inner_iters'],
+            ))
         else:
             # AOTD: accuracy (24) + descent (28) gating
             eps_max = eps_max_value(
@@ -415,9 +441,14 @@ def run_algorithm(prob, cfg, z0, lam0):
                     b_used=b_used,
                     eps_used=eps_used,
                     eps_g=eps_g,
+                    local_solves=local_checks,
                 )
+                if not all(c['converged'] for c in local_checks):
+                    rec['outcome'] = 'local_fail'
+                    pass_log.append(rec)
+                    break
                 if r_norm <= acc_rhs:  # (24) accuracy
-                    gflat = grad_merit_flat(prob, z, lam, eta1, eta2, H=H_unmod, G=G)
+                    gflat = grad_merit_flat(prob, z, lam, eta1, eta2, H=H_true, G=G)
                     gdir = gflat @ direction
                     descent_rhs = -0.5 * eta2 * grad_L_norm**2
                     rec["gdir"] = float(gdir)
@@ -616,26 +647,33 @@ def run_algorithm(prob, cfg, z0, lam0):
                         f"b={min(b_list)}..{max(b_list)} ε_i={min(eps_i_list):.2e}..{max(eps_i_list):.2e}"
                     )
 
-        # augmented-Lagrangian line search
+        # A failed budget is a failed solve, never permission to apply a step.
+        failure_reason = None
+        if pass_log[-1]['outcome'] == 'local_fail':
+            failure_reason = 'local_accuracy'
+        elif cfg.adaptive and pass_log[-1]['outcome'] != 'accept':
+            failure_reason = 'accuracy_budget'
+
+        # augmented-Lagrangian line search, using the exact merit derivative
         t_ls = time.perf_counter()
         cur_merit = merit(prob, z, lam, eta1, eta2, G=G)
-        gflat = grad_merit_flat(prob, z, lam, eta1, eta2, H=H_unmod, G=G)
+        gflat = grad_merit_flat(prob, z, lam, eta1, eta2, H=H_true, G=G)
         grad_dot_dir = gflat @ direction
-        alpha, nbt, accepted = armijo(
-            prob,
-            z,
-            lam,
-            direction,
-            eta1,
-            eta2,
-            cfg.beta,
-            max_backtracks=cfg.linesearch_max_backtracks,
-            current_merit=cur_merit,
-            current_grad_dot_dir=grad_dot_dir,
-        )
-        z = z + alpha * direction[:nz]
-        lam = lam + alpha * direction[nz:]
-        step_norm = alpha * np.linalg.norm(direction)
+        if failure_reason is None:
+            alpha, nbt, accepted = armijo(
+                prob, z, lam, direction, eta1, eta2, cfg.beta,
+                max_backtracks=cfg.linesearch_max_backtracks,
+                current_merit=cur_merit, current_grad_dot_dir=grad_dot_dir,
+            )
+            if not accepted:
+                failure_reason = 'line_search'
+                alpha = 0.0
+        else:
+            alpha, nbt, accepted = 0.0, 0, False
+        if accepted:
+            z = z + alpha * direction[:nz]
+            lam = lam + alpha * direction[nz:]
+        step_norm = alpha * np.linalg.norm(direction) if accepted else 0.0
         dt_ls = time.perf_counter() - t_ls
         T["subsolve"] += ostat["sub_serial"]
         T["subsolve_par"] += ostat["sub_par"]
@@ -652,6 +690,11 @@ def run_algorithm(prob, cfg, z0, lam0):
                 eta2=eta2,
                 eps_g=eps_g,
                 theta_k=theta_k,
+                hessian_model="gauss_newton" if cfg.gauss_newton else "full_lagrangian",
+                hessian_shift_max=hessian_max_shift,
+                hessian_shifted_blocks=hessian_nmods,
+                hessian_shifts=hessian_shifts,
+                merit_slope=float(grad_dot_dir),
                 b_min=min(b_list),
                 b_max=max(b_list),
                 b_mean=float(np.mean(b_list)),
@@ -666,6 +709,8 @@ def run_algorithm(prob, cfg, z0, lam0):
                 alpha=alpha,
                 n_backtracks=nbt,
                 accepted=accepted,
+                step_applied=accepted,
+                failure_reason=failure_reason,
                 n_inner_passes=ostat["n_pass"],
                 inner_iters=ostat["inner_iters"],
                 matvecs=ostat["matvecs"],
@@ -680,6 +725,9 @@ def run_algorithm(prob, cfg, z0, lam0):
         vlog(
             f"[AN] outer τ={tau} done  α={alpha:.3g} ‖step‖={step_norm:.4g} accepted={accepted}"
         )
+        if failure_reason is not None:
+            stop_reason = failure_reason
+            break
         if step_norm <= cfg.tol_step:
             stop_reason = "step"
             tau += 1
@@ -688,6 +736,10 @@ def run_algorithm(prob, cfg, z0, lam0):
     # critical-path (parallel) wall = serial total minus the serialized sub-solve, plus
     # the per-outer max-over-subproblems (the M subproblems run concurrently).
     parallel_subsolve = T["subsolve_par"]
+    final_gz, final_f = grad_lagrangian(prob, z, lam)
+    grad_L_norm = float(np.linalg.norm(np.concatenate([final_gz, final_f])))
+    if stop_reason in ('max_iters', 'step') and grad_L_norm <= cfg.tol_kkt:
+        stop_reason = 'kkt'
     return {
         "stop_reason": stop_reason,
         "converged": stop_reason == "kkt",
@@ -696,8 +748,8 @@ def run_algorithm(prob, cfg, z0, lam0):
         "total_inner_iters": total_inner_iters,
         "total_flops": total_flops,
         "final_grad_L_norm": grad_L_norm,
-        "final_feas": float(np.linalg.norm(constraint_residual(prob, z))),
-        "final_stationarity": float(np.linalg.norm(grad_lagrangian(prob, z, lam)[0])),
+        "final_feas": float(np.linalg.norm(final_f)),
+        "final_stationarity": float(np.linalg.norm(final_gz)),
         "final_cost": cost(prob, z),
         "eta1": eta1,
         "eta2": eta2,

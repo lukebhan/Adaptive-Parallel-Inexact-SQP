@@ -36,9 +36,10 @@ MAX_OUTER = 25
 FOTD_QLP_TOL = 1e-14
 FOTD_QLP_MAX_INNER = 100
 AOTD_MAX_INNER = 100
+AOTD_MAX_PASSES = int(os.environ.get("AOTD_MAX_PASSES", "50"))
 VB, VE = 4.0, 0.2  # swing headline hybrid rates
 MAX_WORKERS = int(os.environ.get("AOTD_WORKERS", "1"))
-SCHEMA = 1
+SCHEMA = 2  # True merit gradient, original-system local residuals, strict gates.
 
 
 def make_seed_problem(N, seed, kick=0.25):
@@ -65,7 +66,14 @@ def run_one(job):
     out = record_path(method, b, M, seed)
     if os.path.exists(out):
         d = json.loads(Path(out).read_text())
-        if "error" not in d and d.get("schema", 0) >= SCHEMA:
+        if (
+            "error" not in d
+            and d.get("schema", 0) >= SCHEMA
+            and (
+                method != "AOTD-rebuild"
+                or d.get("max_inner_passes") == AOTD_MAX_PASSES
+            )
+        ):
             return d
     sys.path.insert(0, SRC)
     os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -82,7 +90,8 @@ def run_one(job):
         common = dict(
             M=M,
             mu=MU,
-            gauss_newton=True,
+            gauss_newton=False,
+            xi_H=1e-6,
             max_outer_iters=MAX_OUTER,
             tol_kkt=1e-6,
             use_preconditioner=(method != "FOTD-LU"),
@@ -119,7 +128,7 @@ def run_one(job):
                 adapt_mode="hybrid",
                 hybrid_b_min1=True,
                 warm_start=True,
-                max_inner_passes=6,
+                max_inner_passes=AOTD_MAX_PASSES,
                 nu=2.0,
                 b_step=4,
                 varrho_b=VB,
@@ -139,6 +148,11 @@ def run_one(job):
         ]  # keep passes for AOTD adaptation fig
         rec = dict(
             schema=SCHEMA,
+            max_inner_passes=cfg.max_inner_passes,
+            max_inner_iters=cfg.max_inner_iters,
+            gauss_newton=cfg.gauss_newton,
+            xi_H=cfg.xi_H,
+            stop_reason=r['stop_reason'],
             method=method,
             method_label=method_label(method, b),
             N=N_H,

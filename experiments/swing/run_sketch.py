@@ -15,6 +15,7 @@ import sys
 import time
 import json
 import traceback
+import importlib
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 
@@ -30,8 +31,9 @@ MU, N_H = 10.0, 1000
 M_LIST = [4, 10, 20, 50]
 SEEDS = [1, 2, 3, 4, 5]
 MAX_OUTER, AOTD_MAX_INNER = 25, 100
+AOTD_MAX_PASSES = int(os.environ.get("AOTD_MAX_PASSES", "50"))
 VB, VE = 4.0, 0.2  # swing headline hybrid rates (match run_comparison.py)
-SCHEMA = 1
+SCHEMA = 2  # True merit gradient, original-system local residuals, strict gates.
 
 
 def make_seed_problem(N, seed, kick=0.25):
@@ -52,11 +54,16 @@ def run_one(job):
     out = record_path(M, seed)
     if os.path.exists(out):
         d = json.loads(Path(out).read_text())
-        if "error" not in d and d.get("schema", 0) >= SCHEMA:
+        if (
+            "error" not in d
+            and d.get("schema", 0) >= SCHEMA
+            and d.get("max_inner_passes") == AOTD_MAX_PASSES
+        ):
             return d
     sys.path.insert(0, SRC)
     try:
         import newton as N
+        importlib.import_module("newton.AOTDsolver")._SKETCH_RNG = np.random.default_rng(0)
 
         globals()["N"] = N
         from newton.baselines.common import initial_guess, pack_traj
@@ -68,7 +75,8 @@ def run_one(job):
         common = dict(
             M=M,
             mu=MU,
-            gauss_newton=True,
+            gauss_newton=False,
+            xi_H=1e-6,
             max_outer_iters=MAX_OUTER,
             tol_kkt=1e-6,
             use_preconditioner=True,
@@ -83,7 +91,7 @@ def run_one(job):
             adapt_mode="hybrid",
             hybrid_b_min1=True,
             warm_start=True,
-            max_inner_passes=6,
+            max_inner_passes=AOTD_MAX_PASSES,
             nu=2.0,
             b_step=4,
             varrho_b=VB,
@@ -101,6 +109,12 @@ def run_one(job):
         traj = [{k: v for k, v in tt.items()} for tt in r["trajectory"]]
         rec = dict(
             schema=SCHEMA,
+            max_inner_passes=cfg.max_inner_passes,
+            max_inner_iters=cfg.max_inner_iters,
+            gauss_newton=cfg.gauss_newton,
+            xi_H=cfg.xi_H,
+            stop_reason=r['stop_reason'],
+            sketch_rng_seed=0,
             method="AOTD-sketch",
             method_label="AOTD-sketch",
             N=N_H,
