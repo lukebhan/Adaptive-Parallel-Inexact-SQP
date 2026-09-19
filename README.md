@@ -1,17 +1,32 @@
-# AOTD
+<p align="center">
+  <a href="https://ucsd.edu/"><img src="assets/uc-san-diego.png" alt="UC San Diego" width="200"></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://www.gatech.edu/"><img src="assets/georgia-tech.png" alt="Georgia Tech" width="180"></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="https://www.berkeley.edu/"><img src="assets/uc-berkeley.svg" alt="UC Berkeley" width="200"></a>
+</p>
+
+<h1 align="center">AOTD</h1>
+<p align="center">Adaptive Overlapping Temporal Decomposition</p>
+<p align="center"><a href="LICENSE">MIT License</a> · Python 3.10+</p>
 
 Python solvers and experiments for **An Adaptive, Parallel, and Inexact Newton
 Method for Large-scale Nonlinear Optimal Control**. Generate your own results or
 use the bundled paper data.
 
-## Install
+![Burgers PDE results: overlap and tolerance adaptation, with computational cost across temporal decompositions.](assets/burgers-results.png)
 
-Requires Python 3.10+.
+*Burgers PDE control at 10,000 and 50,000 time steps: adaptive overlaps and
+local solve tolerances (left, middle), and computational work across methods
+(right). Figure 5, using the archived five-seed experiments.*
+
+## Getting started
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
+python experiments.py smoke
 ```
 
 Plotting also requires LaTeX. On Debian/Ubuntu:
@@ -52,3 +67,22 @@ root after changing settings to avoid reusing older records.
 
 Solver code is in `src/newton/`. `python experiments.py --help`
 lists all commands, including verification and a quick solver check.
+
+## Citation
+
+Placeholder—publication details will be added before the final release.
+
+```bibtex
+@misc{bhan_aotd,
+  author = {Bhan, Luke and Mahoney, Michael W. and Na, Sen},
+  title = {An Adaptive, Parallel, and Inexact Newton Method for
+           Large-scale Nonlinear Optimal Control},
+  note = {Citation placeholder: venue, year, and DOI to be added}
+}
+```
+
+## License
+
+Code is released under the [MIT License](LICENSE). University logos remain the
+property of their respective institutions and are not covered by this license;
+their display does not imply endorsement. See [asset sources](assets/README.md).
