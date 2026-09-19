@@ -3,8 +3,6 @@
 
 import os
 from pathlib import Path
-import json
-import glob
 import numpy as np
 import matplotlib
 
@@ -13,12 +11,6 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator, LogLocator
 import matplotlib.patches as mpatches
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-WORK = os.environ.get(
-    "AOTD_WORK", os.path.abspath(os.path.join(HERE, "..", "..", "results", "swing"))
-)
-os.makedirs(WORK, exist_ok=True)
-REC = os.path.join(WORK, "records")
 M_COLS = [4, 10, 20, 50]
 SEEDS = [1, 2, 3, 4, 5]
 CONV = 1e-6
@@ -31,26 +23,20 @@ ASO, LUC, QLPC, PUR = (
 )  # AOTD / FOTD-LU / FOTD-QLP / Schwarz
 MCOL = {4: "#d62728", 10: "#ff7f0e", 20: "#2ca02c", 50: "#1f77b4"}
 
-# baselines (IPOPT/MultiShoot/ADMM/Schwarz) at the SAME sigma=0.6 IC (run_baselines.py)
-D = [
-    r
-    for r in json.loads(Path(os.path.join(WORK, "baselines_sigma06.json")).read_text())
-    if r["method"] in ("IPOPT", "MultiShoot", "ADMM", "Schwarz")
-]
-# this sweep's records: remap method_label -> (method, b), wall_contended -> wall, family newton
-for f in glob.glob(os.path.join(REC, "*.json")):
-    r = json.loads(Path(f).read_text())
-    if "error" in r:
-        continue
-    lab = r["method_label"]
-    r["method"] = (
-        "AOTD" if lab == "AOTD-rebuild" else lab.rsplit("-b", 1)[0]
-    )  # FOTD-LU / FOTD-QLP
-    r["family"] = "newton"
-    r["wall"] = r.get("wall_contended", float("nan"))
-    D.append(r)
-idx = {(r["method"], r["b"], r["M"], r["seed"]): r for r in D}
-STRICT_RESULTS = any(r.get('schema', 0) >= 2 for r in D)
+
+def configure(records, output, config):
+    global D, idx, WORK, M_COLS, SEEDS, CONV
+    WORK = str(output)
+    M_COLS, SEEDS = config["M"], config["seeds"]
+    CONV = config["algorithm"]["tol_kkt"]
+    if M_COLS != [4, 10, 20, 50]:
+        raise ValueError("Manuscript Swing layout requires M=[4,10,20,50]")
+    D = [
+        dict(r, method="AOTD" if r["method"] == "AOTD-rebuild" else r["method"])
+        for r in records
+    ]
+    idx = {(r["method"], r["b"], r["M"], r["seed"]): r for r in D}
+
 
 plt.rcParams.update(
     {
@@ -132,17 +118,6 @@ def adapt_passes(M):
     )
 
 
-def flops_stats(method, b, M):
-    v = runs(method, b, M)
-    conv = [r["flops"] for r in v if r["kkt"] < CONV]
-    return (
-        (np.mean(conv), np.std(conv), len(conv) < len(v))
-        if conv
-        else (np.nan, 0.0, True)
-    )
-
-
-# convergence: AOTD, FOTD (LU) b40, Schwarz b40
 def fig_convergence():
     w, h = set_size(505, subplots=(1, len(M_COLS)))
     fig, ax = plt.subplots(1, len(M_COLS), figsize=(w, h * 1.7), sharey=True)
@@ -152,29 +127,22 @@ def fig_convergence():
         ("FOTD-LU", 10, r"FOTD (LU) $b{=}10$", QLPC, ":", 2),
         ("Schwarz", 40, r"Schwarz $b{=}40$", PUR, "-.", 1),
     ]
-    lower_limit = 3e-8
     for a, M in zip(ax, M_COLS):
         for method, b, lab, c, ls, z in series:
             agg = conv_agg(method, b, M)
             if agg is None:
                 continue
             m, lo, hi = agg
-            lower_limit = min(lower_limit, float(np.min(lo)) * 0.5)
             x = np.arange(len(m))
             a.fill_between(x, lo, hi, color=c, alpha=0.15, lw=0, zorder=z - 0.5)
             a.semilogy(x, m, ls, color=c, lw=1.5, label=lab, zorder=z)
         a.axhline(CONV, color="k", ls=":", lw=0.9)
         a.set_title(rf"$M={M}$")
-        if STRICT_RESULTS:
-            group = runs('AOTD', None, M)
-            nconv = sum(r['converged'] for r in group)
-            a.text(.03, .06, rf"AOTD: {nconv}/{len(group)} converged", transform=a.transAxes,
-                   ha='left', va='bottom', fontsize=7)
         a.minorticks_off()
         a.grid(alpha=0.3, which="major", lw=0.4)
         a.set_xlabel(r"outer iteration $\tau$")
-        a.set_ylim(lower_limit, 3e1)
-        a.yaxis.set_major_locator(LogLocator(base=10, numticks=7))
+        a.set_ylim(1e-7, 1e1)
+        a.set_yticks(10.0 ** np.arange(-7, 2, 2))
     ax[0].set_ylabel(r"KKT residual $\|\nabla\mathcal{L}\|$")
     hh, ll = ax[0].get_legend_handles_labels()
     fig.tight_layout()
@@ -217,7 +185,6 @@ def fig_adaptation():
     ab.set_ylim(0, None)
     ab.set_title(r"(a) overlap adaptation")
     ab.grid(alpha=0.3, lw=0.4)
-    ab.legend(frameon=False, loc="upper left")
     ab.set_xlabel(r"inner iteration (pass)")
     ab.yaxis.set_major_locator(MaxNLocator(nbins=6, min_n_ticks=4))
     ae.set_ylabel(r"inner tol $\min_i\varepsilon_i$")
@@ -239,10 +206,14 @@ def fig_adaptation():
     ]
 
     def conv_flops(method, b, M):
+        # Omit the two fixed-overlap FOTD comparisons at the finest partition.
+        # Their convergence counts and work remain in the tables and records.
+        if M == 50 and method in ("FOTD-LU", "FOTD-QLP"):
+            return []
         return [
             r["flops"]
             for r in runs(method, b, M)
-            if (STRICT_RESULTS or r["kkt"] < CONV) and np.isfinite(r.get("flops", np.nan))
+            if np.isfinite(r.get("flops", np.nan))
         ]
 
     present = [s for s in cseries if any(conv_flops(s[0], s[1], M) for M in M_COLS)]
@@ -276,22 +247,48 @@ def fig_adaptation():
                 ln.set(color=c, lw=1.0)
             for md in bp["medians"]:
                 md.set(color=c, lw=1.7)
-            if STRICT_RESULTS:
-                failed = [r['flops'] for r in runs(method, b, M) if r['kkt'] >= CONV]
-                af.scatter([gi+dx]*len(failed), failed, marker='x', color=c,
-                           s=18, linewidths=1, zorder=5)
+            failed = [r["flops"] for r in runs(method, b, M) if not r["converged"]]
+            af.scatter(
+                [gi + dx] * len(failed),
+                failed,
+                marker="x",
+                color=c,
+                s=18,
+                linewidths=1,
+                zorder=5,
+            )
     af.set_yscale("log")
+    # Retain the archived upper scale, but include cheaper current runs with
+    # log-space padding so their boxes and lower whiskers are not clipped.
+    archived_min, archived_max = 67157320.0, 3170000000.0
+    log_margin = (archived_max / archived_min) ** 0.05
+    upper = archived_max * log_margin
+    displayed = [
+        v
+        for method, b, _, _ in present
+        for M in M_COLS
+        for v in conv_flops(method, b, M)
+        if v > 0
+    ]
+    lower = archived_min / log_margin
+    if displayed:
+        data_min = min(displayed)
+        lower = min(lower, data_min / (upper / data_min) ** 0.05)
+    af.set_ylim(lower, upper)
     af.set_xticks(range(len(M_COLS)))
     af.set_xticklabels(M_COLS)
     af.set_xlim(-0.6, len(M_COLS) - 0.4)
     af.set_ylabel(r"FLOPs")
     af.set_xlabel(r"$M$")
-    af.set_title(r"(c) work spent ($\times$: failed)" if STRICT_RESULTS else r"(c) comp.\ cost vs $M$")
+    af.set_title(r"(c) comp.\ cost vs $M$")
     af.grid(alpha=0.3, which="both", axis="y", lw=0.4)
     af.yaxis.set_major_locator(
         LogLocator(base=10, subs=(1.0, 3.0), numticks=12)
     )  # >=4 ticks over ~2 decades
     fig.tight_layout()
+    # One legend centered beneath both adaptation panels.
+    handles, labels = ab.get_legend_handles_labels()
+    pos_b, pos_e = ab.get_position(), ae.get_position()
     # shared box legend under panel (c) (mirrors the Burgers cost-column legend)
     box_leg = [
         ("AOTD", ASO),
@@ -301,7 +298,7 @@ def fig_adaptation():
     ]
     hs = [mpatches.Patch(facecolor=cc, alpha=0.35, edgecolor=cc) for _, cc in box_leg]
     pos = af.get_position()
-    fig.legend(
+    cost_legend = fig.legend(
         hs,
         [ll for ll, _ in box_leg],
         loc="upper center",
@@ -313,6 +310,21 @@ def fig_adaptation():
         columnspacing=1.4,
         fontsize=8,
     )
+    # Center the single-row legend vertically within the two-row cost legend.
+    fig.canvas.draw()
+    legend_box = cost_legend.get_window_extent(fig.canvas.get_renderer()).transformed(
+        fig.transFigure.inverted()
+    )
+    fig.legend(
+        handles,
+        labels,
+        loc="center",
+        bbox_to_anchor=((pos_b.x0 + pos_e.x1) / 2, (legend_box.y0 + legend_box.y1) / 2),
+        ncol=len(handles),
+        frameon=False,
+        fontsize=8,
+        columnspacing=1.8,
+    )
     p = os.path.join(WORK, "swing_adaptation.pdf")
     fig.savefig(p, bbox_inches="tight")
     plt.close(fig)
@@ -322,6 +334,8 @@ def fig_adaptation():
 # tables
 def _pwall(x):
     """Estimate parallel wall time from critical-path solves; global phases stay serial."""
+    if not x["timing_valid"]:
+        return float("nan")
     if x.get("family") == "newton":
         tr = x.get("trajectory")
         if tr:
@@ -346,12 +360,22 @@ def cell(method, b, M):
         kkt=kkt / 1e-7,
         flops=float(np.mean([x["flops"] for x in v])),
         flops_sd=float(np.std([x["flops"] for x in v])),
-        pwall=float(np.nanmean(pw)),
-        pwall_sd=float(np.nanstd(pw)),
-        outer=float(np.mean([x["outer_iters"] for x in v])),
+        pwall=float(np.mean(pw)),
+        pwall_sd=float(np.std(pw)),
+        outer=float(
+            np.mean(
+                [
+                    sum(t["step_applied"] for t in x["trajectory"])
+                    if x.get("family") == "newton"
+                    else x["outer_iters"]
+                    for x in v
+                ]
+            )
+        ),
         inner=float(np.mean([x["inner_iters"] for x in v])),
-        conv=all(x['kkt'] < CONV for x in v) if STRICT_RESULTS else kkt < CONV,
-        n_converged=sum(x['kkt'] < CONV for x in v),
+        conv=len(v) == len(SEEDS)
+        and all(x["converged"] and x["kkt"] <= CONV for x in v),
+        n_converged=sum(x["converged"] and x["kkt"] <= CONV for x in v),
         n_runs=len(v),
     )
 
@@ -410,7 +434,7 @@ def build_table(
         if c is None:
             return NA
         if not c["conv"]:
-            return rf"{c['n_converged']}/{c['n_runs']} conv." if STRICT_RESULTS else STALL
+            return STALL
         return value_fmt(c, M, best)
 
     def itf(spec, c):
@@ -471,17 +495,6 @@ def build_table(
         "AOTD (GMRES) &", r"\midrule" + "\nAOTD (GMRES) &", 1
     )
     Path(os.path.join(WORK, stem + ".tex")).write_text(tex + "\n")
-    doc = "\n".join(
-        [
-            r"\documentclass[10pt]{article}",
-            r"\usepackage[a4paper,margin=0.4in,landscape]{geometry}",
-            r"\usepackage{booktabs,amsmath,amssymb,lmodern,graphicx}",
-            r"\begin{document}\thispagestyle{empty}",
-            rf"\input{{{stem}.tex}}",
-            r"\end{document}",
-        ]
-    )
-    Path(os.path.join(WORK, stem + "_doc.tex")).write_text(doc + "\n")
     print("wrote ->", stem + ".tex")
 
 
@@ -498,6 +511,8 @@ def fmt_flops(c, M, best, span=False):
 
 
 def fmt_pwall(c, M, best, span=False):
+    if not np.isfinite(c["pwall"]):
+        return NA
     s = rf"${c['pwall']:.1f}{{\pm}}{c['pwall_sd']:.1f}$"
     if span:
         return s  # IPOPT monolithic: T_par = wall
@@ -509,68 +524,14 @@ def fmt_pwall(c, M, best, span=False):
 
 
 HL_CAP = (
-    r"Comparison on the NE39 swing OCP ($N{=}1000$, 5 IC-noise seeds with the larger $\sigma{=}0.6$ "
-    r"initial-condition perturbation $x_0{=}x_0^{\mathrm{nom}}(0.25){+}0.6\cdot0.25\,\xi$, $\xi\sim\mathcal N(0,I)$, mean). AOTD uses the hybrid "
-    r"law ($\varrho_b{=}4$, $\varrho_\varepsilon{=}0.2$). The two accurate FOTD baselines solve each local "
-    r"Newton system by a direct sparse factorization -- \textbf{FOTD (LU)} -- or GMRES--QLP to "
-    r"$\varepsilon_i{=}$rank-tol${=}10^{-14}$ with inner iterations capped at 100 -- \textbf{FOTD (GMRES)} "
-    r"(both give the same convergence; FLOPs differ). KKT residual in units of $10^{-7}$ (converged iff "
-    r"$<\!10$); FLOPs in $10^{7}$, mean$\pm$std, under the FLOP model that counts the Schur-complement "
-    r"formation. `---' $=$ did not converge; `--' $=$ metric not defined (out/in apply only to FOTD/AOTD). "
-    r"Columns are $M$; FOTD/Schwarz at fixed overlap $b$, AOTD adapts $b_i$. Per column the best converged "
-    r"KKT and FLOPs among the decomposed methods are bold."
+    r"Comparison on the NE39 swing OCP ($N=1000$, mean$\pm$stdev over 5 seeds). "
+    r"$M$ is the number of temporal subproblems. Entries marked --- did not converge. "
+    r"Inner iterations are the iteration count for the specific solver used."
 )
 AP_CAP = (
-    r"Timing companion to Table~\ref{tab:swing_exp10_highlight}, NE39 swing. \emph{Parallel wall} "
-    r"$T_{\parallel}$ $=$ the idealized $M$-worker wall-clock: the $M$ subproblem solves run concurrently "
-    r"(critical path $=$ the slowest one) while the global phases (assembly, composition/consensus, line "
-    r"search) stay serial, i.e.\ $T_{\parallel}=$ wall $-\,t_{\text{sub}}^{\text{serial}}+t_{\text{sub}}"
-    r"^{\parallel}$ (IPOPT is monolithic $\Rightarrow T_{\parallel}=$ wall). This replaces the earlier "
-    r"wall$/M$, which wrongly divided the serial global phases by $M$ too. out/in $=$ outer / total-inner "
-    r"iterations; mean$\pm$std over 5 seeds; `---' $=$ not converged. \textbf{Caveat:} AOTD/FOTD are "
-    r"unoptimized Python while IPOPT/Schwarz/MultiShoot/ADMM use compiled CasADi/Ipopt, and walls are "
-    r"CPU-contended, so $T_{\parallel}$ is indicative; FLOPs (Table~\ref{tab:swing_exp10_highlight}) is the "
-    r"fair, machine-independent axis. Per column the best $T_{\parallel}$ among decomposed methods is bold."
-)
-
-if STRICT_RESULTS:
-    HL_CAP = (
-        r"Corrected NE39 swing comparison ($N=1000$, five initial-condition seeds). "
-        r"All Newton methods use the full Lagrangian Hessian with a stagewise eigenvalue "
-        r"floor of $10^{-6}$ for the solve, and the true Hessian for the merit derivative. "
-        r"Local residuals are checked in the original coordinates. Failed local solves, "
-        r"acceptance budgets or line searches terminate without applying a step. AOTD "
-        r"allows 50 passes; local iterative solvers allow 100 iterations/matvecs. "
-        r"Work includes residual-certification matvecs under the dominant-operation model. "
-        r"Numerical cells require all five runs to converge; otherwise the work cell reports "
-        r"the success count. Full failed-case residuals and work are retained in the accompanying "
-        r"CSV and figures. Bold denotes the lowest mean work among fully converged decomposed "
-        r"groups. Nonlinear baselines are unchanged archived runs."
-    )
-    AP_CAP = (
-        r"Timing companion for the corrected swing runs. Numerical cells require all five "
-        r"runs to converge; other cells give success counts. $T_{\parallel}$ is estimated "
-        r"from the longest local solve per pass plus serial phases, not measured distributed "
-        r"execution. Newton runs used concurrent workers; nonlinear baselines are archived "
-        r"under different execution conditions. These timings do not establish speedups."
-    )
-
-fig_convergence()
-fig_adaptation()
-build_table(
-    fmt_flops,
-    "flops",
-    r"FLOPs ($\times 10^{7}$)",
-    HL_CAP,
-    "tab:swing_exp10_highlight",
-    "swing_highlight_table",
-)
-build_table(
-    fmt_pwall,
-    "pwall",
-    r"parallel wall $T_{\parallel}$ (s)",
-    AP_CAP,
-    "tab:swing_exp10_appendix",
-    "swing_appendix_table",
-    show_kkt=False,
+    r"NE39 swing timing companion. Measurements use sequential scenarios with one BLAS thread. "
+    r"$T_{\parallel}$ estimates the longest local solve per pass plus serial phases; "
+    r"it is not measured distributed execution. Mean$\pm$stdev over five seeds; "
+    r"--- means at least one run did not converge. Implementations differ (Python versus "
+    r"compiled CasADi/Ipopt), so these measurements alone do not establish algorithmic speedups."
 )

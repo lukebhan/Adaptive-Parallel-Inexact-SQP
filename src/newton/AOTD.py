@@ -64,7 +64,6 @@ class AlgorithmConfig:
     )
     ilu_drop_tol: float = 1e-2  # ILU-Schur drop tolerance (cost vs tol-sensitivity)
     max_inner_iters: int = 250
-    gauss_newton: bool = False  # Optional direction model only; merit always uses true H.
     xi_H: float = 1e-6  # Positive stagewise eigenvalue floor for the direction model.
     warm_start: bool = (
         False  # warm-start each pass's inner solves from the previous pass
@@ -78,34 +77,52 @@ class AlgorithmConfig:
     freeze_rebuild_ratio: float = 2.0  # rebuild the frozen preconditioner once iters exceed this × the post-build count
     adaptive: bool = True
     nu: float = 2.0  # adaptation rate ν for η-updates (29)-(30)
-    eps_update: str = "geometric"  # global ε^τ forcing rule: "geometric" (Eq.30, ε^τ/ν⁴) | "ew" (Eisenstat-Walker Choice 2)
-    ew_gamma: float = 0.9  # EW Choice-2 γ
-    ew_alpha: float = 1.618  # EW Choice-2 α (golden ratio)
-    varrho: float = 0.01  # adaptation rate ϱ for ε_i/b_i updates (26)-(27); demand-mode default for both rates
-    adapt_mode: str = "fixed_step"  # Selects the overlap/tolerance update law.
-    kappa: float = 2.0  # "simple" mode: fixed tolerance shrink factor κ>1 (ε_i ← ε_i/κ, b_i ← min(b_i+1, b_max)) ∀i
-    varrho_b: float = None  # overlap rate ϱ_b for b_i update (None ⇒ uses varrho); "residual" & "demand" modes
-    varrho_eps: float = None  # tolerance rate ϱ_ε for ε_i update (None ⇒ uses varrho); "residual" & "demand" modes
-    demand_rho: float = (
-        None  # demand-mode only: optional EDS rate ρ to scale the b-map by 1/log(1/ρ)
-    )
-    b_step: int = 3  # fixed_step overlap increment
-    hybrid_b_min1: bool = False  # hybrid mode: floor the b_i increment at 1 (b_i ← b_i + max{1, ⌈ϱ_b‖r_i‖/‖r‖⌉})
-    acc_relax: float = (
-        1.0  # relaxation κ on accuracy condition (24): ‖r‖≤κ·θ·ε^τ·‖∇L‖/(‖Γ‖Ψ)
-    )
-    # global ε^τ schedule θ (poly/exp); θ0=θ_min=1 recovers the un-scheduled scheme
-    theta0: float = 1.0
-    theta_min: float = 1.0
+    varrho_b: float = 32.0
+    varrho_eps: float = 0.5
     psi: float = 1.0
     upsilon: float = 1.0
-    eps_max_floor: float = 1e-12
     linesearch_max_backtracks: int = 30
     verbose: bool = False
 
+    def __post_init__(self):
+        for name in (
+            "M",
+            "max_inner_passes",
+            "max_outer_iters",
+            "max_inner_iters",
+            "max_overlap",
+            "sketch_restart",
+            "linesearch_max_backtracks",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        for name in (
+            "mu",
+            "eta1_0",
+            "eta2_0",
+            "eps0",
+            "eps_i_0",
+            "eps_i_floor",
+            "xi_H",
+            "varrho_b",
+            "varrho_eps",
+            "psi",
+            "upsilon",
+            "inner_rank_tol",
+        ):
+            value = getattr(self, name)
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if not 0 < self.beta < 0.5 or not np.isfinite(self.nu) or self.nu <= 1:
+            raise ValueError("Require 0 < beta < .5 and nu > 1")
+        if not isinstance(self.b0, int) or not 0 <= self.b0 <= self.max_overlap:
+            raise ValueError("Require integer 0 <= b0 <= max_overlap")
 
-def eps_max_value(eta1, eta2, beta, psi, upsilon, floor):
-    return max((0.5 - beta) * eta2 / (1.0 + eta1 + eta2), floor)
+
+def eps_max_value(eta1, eta2, beta, psi, upsilon):
+    # Do not enlarge this bound with a numerical floor.
+    return (0.5 - beta) * eta2 / ((1.0 + eta1 + eta2) * (psi * upsilon) ** 2)
 
 
 def run_algorithm(prob, cfg, z0, lam0):
@@ -117,10 +134,6 @@ def run_algorithm(prob, cfg, z0, lam0):
     knots = uniform_knots(prob.N, cfg.M)
     b_list = [cfg.b0] * cfg.M
     eps_i_list = [cfg.eps_i_0] * cfg.M
-    ell_b = [0.0] * cfg.M
-    ell_e = [
-        0.0
-    ] * cfg.M  # demand-mode accumulators for overlap / tolerance (separate rates)
     eta1, eta2 = cfg.eta1_0, cfg.eta2_0
     eps_g = cfg.eps0
     total_matvecs = 0
@@ -130,7 +143,6 @@ def run_algorithm(prob, cfg, z0, lam0):
     round_sub_times = []  # per-barrier list of per-subproblem wall times (throughput-wall model)
     stop_reason = "max_iters"
     grad_L_norm = np.inf
-    prev_grad_L_norm = None  # ‖∇L^{τ-1}‖ for the EW forcing ratio
     tau = 0
     trajectory = []  # per-outer records
     # wall-clock phase accumulators (serial) + critical-path (parallel) sub-solve
@@ -169,23 +181,13 @@ def run_algorithm(prob, cfg, z0, lam0):
 
         H_true_blocks = hessian_blocks(prob, z, lam, gauss_newton=False)
         H_true = sp.block_diag(H_true_blocks, format="csr")
-        H_model_blocks = (
-            hessian_blocks(prob, z, lam, gauss_newton=True)
-            if cfg.gauss_newton else H_true_blocks
-        )
         H_mod, hessian_shifts, hessian_nmods, hessian_max_shift = modify_hessian_blocks(
-            H_model_blocks, cfg.xi_H
+            H_true_blocks, cfg.xi_H
         )
         Gamma_global = assemble_kkt(H_mod, G)
         Gamma_norm = spectral_norm_2(Gamma_global)
         T["assemble"] += time.perf_counter() - t_o
 
-        # θ schedule (poly): θ0/(τ+1) if scheduled, else 1
-        theta_k = (
-            max(cfg.theta_min, cfg.theta0 / (tau + 1.0))
-            if cfg.theta0 > cfg.theta_min
-            else cfg.theta0
-        )
         # per-outer work accumulators (serial sum + critical-path max over subproblems)
         ostat = dict(
             matvecs=0,
@@ -306,15 +308,20 @@ def run_algorithm(prob, cfg, z0, lam0):
                     restart=cfg.sketch_restart,
                     rank_tol=cfg.inner_rank_tol,
                 )
-                local_checks.append(dict(
-                    subproblem=i, tolerance=float(tol),
-                    residual_norm=info['residual_norm'],
-                    rhs_norm=info['rhs_norm'],
-                    residual_threshold=info['residual_threshold'],
-                    relative_residual=info['relative_residual'],
-                    converged=info['converged'], cap_hit=info['cap_hit'],
-                    iters=info['iters'], matvecs=info['matvecs'],
-                ))
+                local_checks.append(
+                    dict(
+                        subproblem=i,
+                        tolerance=float(tol),
+                        residual_norm=info["residual_norm"],
+                        rhs_norm=info["rhs_norm"],
+                        residual_threshold=info["residual_threshold"],
+                        relative_residual=info["relative_residual"],
+                        converged=info["converged"],
+                        cap_hit=info["cap_hit"],
+                        iters=info["iters"],
+                        matvecs=info["matvecs"],
+                    )
+                )
                 # Rebuild reused factors if Krylov iterations exceed 1.7 times the fresh-build count.
                 if cfg.freeze_precond and i in _frozen_pc:
                     if _frozen_iters0.get(i) is None:
@@ -381,36 +388,33 @@ def run_algorithm(prob, cfg, z0, lam0):
             # FOTD: one exact solve per outer
             dz, dl = solve_all(b_list, eps_i_list, exact=True)
             direction = np.concatenate([dz, dl])
-            pass_log.append(dict(
-                pass_idx=0, b_used=list(b_list), eps_used=list(eps_i_list),
-                local_solves=local_checks,
-                outcome="fixed_solve" if all(c['converged'] for c in local_checks) else "local_fail",
-                pass_flops=float(ostat['flops']),
-                pass_matvecs=ostat['matvecs'], pass_inner_iters=ostat['inner_iters'],
-            ))
+            pass_log.append(
+                dict(
+                    pass_idx=0,
+                    b_used=list(b_list),
+                    eps_used=list(eps_i_list),
+                    local_solves=local_checks,
+                    outcome="fixed_solve"
+                    if all(c["converged"] for c in local_checks)
+                    else "local_fail",
+                    pass_flops=float(ostat["flops"]),
+                    pass_matvecs=ostat["matvecs"],
+                    pass_inner_iters=ostat["inner_iters"],
+                )
+            )
         else:
             # AOTD: accuracy (24) + descent (28) gating
-            eps_max = eps_max_value(
-                eta1, eta2, cfg.beta, cfg.psi, cfg.upsilon, cfg.eps_max_floor
-            )
-            if (
-                cfg.eps_update == "ew"
-                and prev_grad_L_norm is not None
-                and prev_grad_L_norm > 0
-            ):
-                # Eisenstat-Walker Choice 2: forcing ∝ (‖∇L^τ‖/‖∇L^{τ-1}‖)^α — loose when
-                # progress is slow (avoid oversolving), tight as ‖∇L‖→0 (→ superlinear).
-                ratio = grad_L_norm / prev_grad_L_norm
-                ew = cfg.ew_gamma * (ratio**cfg.ew_alpha)
-                safe = cfg.ew_gamma * (
-                    eps_g**cfg.ew_alpha
-                )  # safeguard vs over-fast drop
-                if safe > 0.1:
-                    ew = max(ew, safe)
-                eps_g = min(eps_max, max(ew, cfg.eps_max_floor))
-            else:
-                eps_g = min(eps_g, eps_max)
-            prev_grad_L_norm = grad_L_norm
+            eps_max = eps_max_value(eta1, eta2, cfg.beta, cfg.psi, cfg.upsilon)
+            # Algorithm 1: only an epsilon above the cap is reset, with
+            # the strict-interior margin 1/nu. Do not shrink it every outer
+            # iteration, or alter an epsilon already at/below the cap.
+            if eps_g > eps_max:
+                eps_before = eps_g
+                eps_g = eps_max / cfg.nu
+                vlog(
+                    f"    [clip] eps_g={eps_before:.6g} > cap={eps_max:.6g} "
+                    f"→ eps_g=cap/nu={eps_g:.6g}"
+                )
             direction = np.zeros(n_kkt(prob))
             prev_dir = None  # warm-start source (prev pass's composed dir)
             for _pass in range(cfg.max_inner_passes):
@@ -424,13 +428,7 @@ def run_algorithm(prob, cfg, z0, lam0):
                 prev_dir = (dz, dl)
                 r = Gamma_global @ direction + grad_L
                 r_norm = np.linalg.norm(r)
-                acc_rhs = (
-                    cfg.acc_relax
-                    * theta_k
-                    * eps_g
-                    * grad_L_norm
-                    / max(Gamma_norm * cfg.psi, 1e-30)
-                )
+                acc_rhs = eps_g * grad_L_norm / max(Gamma_norm * cfg.psi, 1e-30)
                 rec = dict(
                     pass_idx=_pass,
                     r_norm=float(r_norm),
@@ -443,8 +441,15 @@ def run_algorithm(prob, cfg, z0, lam0):
                     eps_g=eps_g,
                     local_solves=local_checks,
                 )
-                if not all(c['converged'] for c in local_checks):
-                    rec['outcome'] = 'local_fail'
+                if not all(c["converged"] for c in local_checks):
+                    for check in local_checks:
+                        if not check["converged"]:
+                            vlog(
+                                f"    [pass {_pass}] local accuracy ✗ subproblem={check['subproblem']} "
+                                f"residual={check['residual_norm']:.3e}>"
+                                f"{check['residual_threshold']:.3e} STOP"
+                            )
+                    rec["outcome"] = "local_fail"
                     pass_log.append(rec)
                     break
                 if r_norm <= acc_rhs:  # (24) accuracy
@@ -470,7 +475,6 @@ def run_algorithm(prob, cfg, z0, lam0):
                             cfg.beta,
                             cfg.psi,
                             cfg.upsilon,
-                            cfg.eps_max_floor,
                         ),
                         eps_g / cfg.nu**4,
                     )
@@ -486,160 +490,21 @@ def run_algorithm(prob, cfg, z0, lam0):
                         f"ε^τ={eps_g:.3e}"
                     )
                 else:  # (24) failed → adapt (b_i, ε_i)
-                    if cfg.adapt_mode == "fixed_step":
-                        for i in range(cfg.M):
-                            eps_i_list[i] = max(
-                                eps_i_list[i] / cfg.nu**3, cfg.eps_i_floor
-                            )
-                            b_list[i] = min(
-                                b_list[i] + cfg.b_step, cfg.max_overlap, prob.N
-                            )
-                    elif cfg.adapt_mode == "simple":
-                        # Uniform adaptation: divide tolerances by kappa and grow overlaps by one.
-                        for i in range(cfg.M):
-                            eps_i_list[i] = max(
-                                eps_i_list[i] / cfg.kappa, cfg.eps_i_floor
-                            )
-                            b_list[i] = min(b_list[i] + 1, cfg.max_overlap, prob.N)
-                    elif cfg.adapt_mode == "fixed":
-                        # Apply fixed tolerance and overlap updates to every subproblem.
-                        rho_e = (
-                            cfg.varrho_eps if cfg.varrho_eps is not None else cfg.varrho
+                    loc = decompose_residual_norms(prob.N, knots, r, nz)
+                    rec["loc_resid"] = [float(x) for x in loc]
+                    for i in range(cfg.M):
+                        frac = loc[i] / max(r_norm, 1e-30)
+                        eps_i_list[i] = max(
+                            eps_i_list[i]
+                            * np.exp(
+                                -min(
+                                    cfg.varrho_eps * (1 / np.sqrt(cfg.M) + frac), 700.0
+                                )
+                            ),
+                            cfg.eps_i_floor,
                         )
-                        rho_b = cfg.varrho_b if cfg.varrho_b is not None else cfg.varrho
-                        for i in range(cfg.M):
-                            eps_i_list[i] = max(
-                                eps_i_list[i] * np.exp(-min(rho_e, 700.0)),
-                                cfg.eps_i_floor,
-                            )
-                            b_list[i] = min(
-                                b_list[i] + int(round(rho_b)), cfg.max_overlap, prob.N
-                            )
-                    elif cfg.adapt_mode == "relative":
-                        # Adapt only subproblems exceeding acc_rhs / sqrt(M).
-                        loc = decompose_residual_norms(prob.N, knots, r, nz)
-                        share = acc_rhs / np.sqrt(cfg.M)
-                        rec["loc_resid"] = [float(x) for x in loc]
-                        rec["share"] = float(share)
-                        for i in range(cfg.M):
-                            if loc[i] <= share:  # meets its share → freeze
-                                continue
-                            eps_i_list[i] = max(
-                                eps_i_list[i] / cfg.nu**3, cfg.eps_i_floor
-                            )
-                            b_list[i] = min(
-                                b_list[i] + cfg.b_step, cfg.max_overlap, prob.N
-                            )
-                    elif cfg.adapt_mode == "demand":
-                        # Accumulate log gate violations at separate overlap and tolerance rates.
-                        rho_b = cfg.varrho_b if cfg.varrho_b is not None else cfg.varrho
-                        rho_e = (
-                            cfg.varrho_eps if cfg.varrho_eps is not None else cfg.varrho
-                        )
-                        bscale = (
-                            (1.0 / np.log(1.0 / cfg.demand_rho))
-                            if (cfg.demand_rho and cfg.demand_rho > 0.0)
-                            else 1.0
-                        )
-                        loc = decompose_residual_norms(prob.N, knots, r, nz)
-                        share = acc_rhs / np.sqrt(cfg.M)
-                        rec["loc_resid"] = [float(x) for x in loc]
-                        rec["share"] = float(share)
-                        for i in range(cfg.M):
-                            d_i = np.log(
-                                max(loc[i] / max(share, 1e-30), 1e-30)
-                            )  # signed log-demand
-                            ell_b[i] = max(0.0, ell_b[i] + rho_b * d_i)
-                            ell_e[i] = max(0.0, ell_e[i] + rho_e * d_i)
-                            b_list[i] = min(
-                                cfg.b0 + int(np.floor(ell_b[i] * bscale)),
-                                cfg.max_overlap,
-                                prob.N,
-                            )
-                            eps_i_list[i] = max(
-                                cfg.eps_i_0 * np.exp(-ell_e[i]), cfg.eps_i_floor
-                            )
-                        rec["ell_b"] = [float(x) for x in ell_b]
-                        rec["ell_e"] = [float(x) for x in ell_e]
-                    elif cfg.adapt_mode == "residual_ceil":
-                        # Ceil residuals so any nonzero residual triggers a full tolerance update.
-                        rho_e = (
-                            cfg.varrho_eps if cfg.varrho_eps is not None else cfg.varrho
-                        )
-                        rho_b = cfg.varrho_b if cfg.varrho_b is not None else cfg.varrho
-                        loc = decompose_residual_norms(prob.N, knots, r, nz)
-                        rec["loc_resid"] = [float(x) for x in loc]
-                        for i in range(cfg.M):
-                            eps_i_list[i] = max(
-                                eps_i_list[i]
-                                * np.exp(-min(rho_e * np.ceil(loc[i]), 700.0)),
-                                cfg.eps_i_floor,
-                            )
-                            b_list[i] = min(
-                                b_list[i] + int(np.ceil(rho_b * loc[i])),
-                                cfg.max_overlap,
-                                prob.N,
-                            )
-                    elif cfg.adapt_mode == "hybrid":
-                        # Hybrid updates add uniform tightening; hybrid_b_min1 also forces overlap growth.
-                        rho_e = (
-                            cfg.varrho_eps if cfg.varrho_eps is not None else cfg.varrho
-                        )
-                        rho_b = cfg.varrho_b if cfg.varrho_b is not None else cfg.varrho
-                        loc = decompose_residual_norms(prob.N, knots, r, nz)
-                        tot = max(r_norm, 1e-30)
-                        base = 1.0 / np.sqrt(cfg.M)
-                        rec["loc_resid"] = [float(x) for x in loc]
-                        for i in range(cfg.M):
-                            frac = loc[i] / tot
-                            eps_i_list[i] = max(
-                                eps_i_list[i]
-                                * np.exp(-min(rho_e * (base + frac), 700.0)),
-                                cfg.eps_i_floor,
-                            )
-                            step_b = int(np.ceil(rho_b * frac))
-                            if cfg.hybrid_b_min1:
-                                step_b = max(1, step_b)
-                            b_list[i] = min(b_list[i] + step_b, cfg.max_overlap, prob.N)
-                    elif cfg.adapt_mode == "residual_rel":
-                        # Scale both updates by the local-to-global residual ratio.
-                        rho_e = (
-                            cfg.varrho_eps if cfg.varrho_eps is not None else cfg.varrho
-                        )
-                        rho_b = cfg.varrho_b if cfg.varrho_b is not None else cfg.varrho
-                        loc = decompose_residual_norms(prob.N, knots, r, nz)
-                        tot = max(r_norm, 1e-30)  # ||r|| (global residual this pass)
-                        rec["loc_resid"] = [float(x) for x in loc]
-                        for i in range(cfg.M):
-                            frac = loc[i] / tot
-                            eps_i_list[i] = max(
-                                eps_i_list[i] * np.exp(-min(rho_e * frac, 700.0)),
-                                cfg.eps_i_floor,
-                            )
-                            b_list[i] = min(
-                                b_list[i] + int(np.ceil(rho_b * frac)),
-                                cfg.max_overlap,
-                                prob.N,
-                            )
-                    else:  # "residual": residual-scaled, per-subproblem (paper Eqs. 26-27)
-                        # Paper update laws with SEPARATELY-TUNABLE rates: ε uses ϱ_ε, b uses ϱ_b
-                        # (both default to ϱ). ε_i ← ε_i·exp(−ϱ_ε‖r̃_i‖); b_i ← b_i + ⌈ϱ_b‖r̃_i‖⌉.
-                        rho_e = (
-                            cfg.varrho_eps if cfg.varrho_eps is not None else cfg.varrho
-                        )
-                        rho_b = cfg.varrho_b if cfg.varrho_b is not None else cfg.varrho
-                        loc = decompose_residual_norms(prob.N, knots, r, nz)
-                        rec["loc_resid"] = [float(x) for x in loc]
-                        for i in range(cfg.M):
-                            eps_i_list[i] = max(
-                                eps_i_list[i] * np.exp(-min(rho_e * loc[i], 700.0)),
-                                cfg.eps_i_floor,
-                            )
-                            b_list[i] = min(
-                                b_list[i] + int(np.ceil(rho_b * loc[i])),
-                                cfg.max_overlap,
-                                prob.N,
-                            )
+                        step_b = max(1, int(np.ceil(cfg.varrho_b * frac)))
+                        b_list[i] = min(b_list[i] + step_b, cfg.max_overlap, prob.N)
                     rec["outcome"] = "acc_fail"
                     pass_log.append(rec)
                     vlog(
@@ -647,12 +512,18 @@ def run_algorithm(prob, cfg, z0, lam0):
                         f"b={min(b_list)}..{max(b_list)} ε_i={min(eps_i_list):.2e}..{max(eps_i_list):.2e}"
                     )
 
+        if not cfg.adaptive:
+            failures = [c for c in local_checks if not c["converged"]]
+            vlog(
+                f"    [fixed solve] local accuracy {'FAIL' if failures else 'PASS'} "
+                f"failed_subproblems={len(failures)}"
+            )
         # A failed budget is a failed solve, never permission to apply a step.
         failure_reason = None
-        if pass_log[-1]['outcome'] == 'local_fail':
-            failure_reason = 'local_accuracy'
-        elif cfg.adaptive and pass_log[-1]['outcome'] != 'accept':
-            failure_reason = 'accuracy_budget'
+        if pass_log[-1]["outcome"] == "local_fail":
+            failure_reason = "local_accuracy"
+        elif cfg.adaptive and pass_log[-1]["outcome"] != "accept":
+            failure_reason = "accuracy_budget"
 
         # augmented-Lagrangian line search, using the exact merit derivative
         t_ls = time.perf_counter()
@@ -661,12 +532,19 @@ def run_algorithm(prob, cfg, z0, lam0):
         grad_dot_dir = gflat @ direction
         if failure_reason is None:
             alpha, nbt, accepted = armijo(
-                prob, z, lam, direction, eta1, eta2, cfg.beta,
+                prob,
+                z,
+                lam,
+                direction,
+                eta1,
+                eta2,
+                cfg.beta,
                 max_backtracks=cfg.linesearch_max_backtracks,
-                current_merit=cur_merit, current_grad_dot_dir=grad_dot_dir,
+                current_merit=cur_merit,
+                current_grad_dot_dir=grad_dot_dir,
             )
             if not accepted:
-                failure_reason = 'line_search'
+                failure_reason = "line_search"
                 alpha = 0.0
         else:
             alpha, nbt, accepted = 0.0, 0, False
@@ -689,8 +567,7 @@ def run_algorithm(prob, cfg, z0, lam0):
                 eta1=eta1,
                 eta2=eta2,
                 eps_g=eps_g,
-                theta_k=theta_k,
-                hessian_model="gauss_newton" if cfg.gauss_newton else "full_lagrangian",
+                hessian_model="full_lagrangian",
                 hessian_shift_max=hessian_max_shift,
                 hessian_shifted_blocks=hessian_nmods,
                 hessian_shifts=hessian_shifts,
@@ -726,6 +603,7 @@ def run_algorithm(prob, cfg, z0, lam0):
             f"[AN] outer τ={tau} done  α={alpha:.3g} ‖step‖={step_norm:.4g} accepted={accepted}"
         )
         if failure_reason is not None:
+            vlog(f"[AN] STOP {failure_reason}; no step applied")
             stop_reason = failure_reason
             break
         if step_norm <= cfg.tol_step:
@@ -738,8 +616,8 @@ def run_algorithm(prob, cfg, z0, lam0):
     parallel_subsolve = T["subsolve_par"]
     final_gz, final_f = grad_lagrangian(prob, z, lam)
     grad_L_norm = float(np.linalg.norm(np.concatenate([final_gz, final_f])))
-    if stop_reason in ('max_iters', 'step') and grad_L_norm <= cfg.tol_kkt:
-        stop_reason = 'kkt'
+    if stop_reason in ("max_iters", "step") and grad_L_norm <= cfg.tol_kkt:
+        stop_reason = "kkt"
     return {
         "stop_reason": stop_reason,
         "converged": stop_reason == "kkt",

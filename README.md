@@ -1,126 +1,156 @@
-<p align="center">
-  <a href="https://ucsd.edu/"><img src="assets/uc-san-diego.png" alt="UC San Diego" width="200"></a>
-  &nbsp;&nbsp;&nbsp;
-  <a href="https://www.gatech.edu/"><img src="assets/georgia-tech.png" alt="Georgia Tech" width="180"></a>
-  &nbsp;&nbsp;&nbsp;
-  <a href="https://www.berkeley.edu/"><img src="assets/uc-berkeley.svg" alt="UC Berkeley" width="200"></a>
-</p>
+# Adaptive Overlapping Temporal Decomposition
 
-<h1 align="center">Adaptive Overlapping Temporal Decomposition (AOTD)</h1> 
+Corrected IEEE 39-bus Swing experiments for *An Adaptive, Parallel, and Inexact
+Newton Method for Large-scale Nonlinear Optimal Control*.
 
-![Burgers PDE results: overlap and tolerance adaptation, with computational cost across temporal decompositions.](assets/burgers-results.png)
-
-*Burgers PDE control at 10,000 and 50,000 time steps: adaptive overlaps and
-local solve tolerances (left, middle), and computational work across methods
-(right). Figure 5, using the archived five-seed experiments.*
-
-## About this repository
-
-This repository contains all the code for reproducing the experiments in the paper titled: **An Adaptive, Parallel, and Inexact Newton
-Method for Large-scale Nonlinear Optimal Control**. For any issues, or questions please make a Github issue or contact the authors at lbhan@ucsd.edu.
-
-## Getting started
+## Install and inspect the configuration
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
-python experiments.py smoke
+python experiments/swing/run_main.py --parallel --dry-run
 ```
 
-Plotting also requires LaTeX. On Debian/Ubuntu:
+Figures need LaTeX, `dvipng`, and Computer Modern fonts. Standalone table PDFs
+also need `latexmk` (Ubuntu packages: `latexmk texlive-latex-extra
+texlive-fonts-recommended cm-super dvipng`).
+
+## Three studies
+
+| Config | Runner in `experiments/swing/` | Scenarios |
+|---|---|---:|
+| `configs/swing.json` | `run_main.py` | 285: 40 AOTD, 120 FOTD, 125 nonlinear baselines |
+| `configs/rate_ablation.json` | `run_rate_ablation.py` | 80: 16 rate pairs × 5 seeds |
+| `configs/eta_ablation.json` | `run_eta_ablation.py` | 36: 9 penalty initializations × 4 ν values |
+
+Each config contains the complete problem and solver settings. The main and
+rate studies use `(varrho_b, varrho_eps)=(32,0.5)` as their reference. Figure 7
+uses `(32,0.6)`, beta=0.0001, eta1={12,13,14}, eta2={0.15,0.20,0.25}, and
+nu={1.075,1.1,1.15,1.2}. This is the previously successful penalty study;
+the separate historical `(32,0.5)` penalty diagnostic includes failures.
+
+The rate grid is varrho_b={1,2,4,32}, varrho_eps={0.1,0.25,0.5,1}.
+All studies use N=1000. Main/rate seeds are 1–5; eta uses seed 1.
+FOTD retains its own explicit penalty settings for comparability.
+
+Choose one execution mode:
 
 ```bash
-sudo apt-get install texlive-latex-extra texlive-fonts-recommended cm-super dvipng
+# Throughput: independent scenarios in separate processes; no reportable timings.
+python experiments/swing/run_main.py --parallel --workers 4
+python experiments/swing/run_rate_ablation.py --parallel --workers 4
+python experiments/swing/run_eta_ablation.py --parallel --workers 4
+
+# Timing: sequential scenarios, one BLAS thread. Run on an otherwise idle machine.
+python experiments/swing/run_main.py --uncontended
 ```
 
-## Generate data
+All three runners accept both modes. `--parallel` parallelizes **scenarios**,
+not the SQP subproblems. `--uncontended` excludes other running studies launched
+by these runners; it cannot control unrelated machine load. Timings include
+logging overhead. Estimated parallel wall time uses the critical path of local
+solves plus serial phases; it is not measured distributed execution.
+
+Defaults write `results/production/<study>/<mode>/`. Use `--output` for another
+directory inside this dev repository's `results/`. `--dry-run` lists scenarios;
+`--limit 2` runs a small subset, explicitly marked partial. Figure/table scripts
+reject partial datasets. Convergence failures remain in a complete study;
+exceptions instead mark the study failed and produce a nonzero exit status.
+
+Use `--resume` to reuse verified results. Identity includes the full scenario,
+problem, solver source hash, complete study config, execution environment, and execution mode.
+Unsuccessful numerical solves are retained; exceptions are retried. Parallel jobs
+are submitted in bounded batches, so interruption does not drain the entire queued sweep. A changed
+configuration or source requires a new output directory. Contended results
+cannot be reused as uncontended timings.
+
+## Live logging
+
+Every output directory contains:
+
+- `progress.log`: scenario START/CACHED/DONE and completed/total counts.
+- `logs/<scenario>.log`: configuration/source hashes, execution mode, each outer
+  KKT/feasibility residual, epsilon clipping, every accuracy/descent pass,
+  overlap/tolerance updates, line-search outcome, and final work/timing summary.
+- `records/<scenario>.json`: detailed numerical trace and acceptance certificates.
+- `manifest.json`: atomic progress snapshots, config, environment, all results,
+  convergence count, and completion status.
+
+Python and native Ipopt output are captured per scenario. Schwarz, ADMM, and
+multiple shooting log outer KKT residuals; IPOPT logs its native per-iteration
+primal/dual diagnostics and the final independently evaluated KKT residual.
 
 ```bash
-python experiments.py run --study swing --workers 1
+tail -f results/production/swing/parallel/progress.log
+# Pick a scenario filename printed by START:
+tail -f results/production/swing/parallel/logs/<scenario>.log
 ```
 
-Studies: `swing`, `burgers`, `rates`, `globalization`, or `all`. Data goes to
-`results/runs/<study>/`; use `--output` to change the root. Settings are in
-`experiments/<study>/run_*.py`. Burgers runs can take hours and tens of GB of RAM.
+`outer_iters` counts applied SQP steps; `outer_checks` also includes the terminal
+KKT check. This avoids counting a terminal check as an applied step.
 
-## Figures and tables
+## Seven artifact generators
 
-After generating all four studies:
+Each script renders exactly one figure or table from a complete manifest.
+Table scripts produce both LaTeX fragments and standalone numbered PDFs;
+`--tex-only` skips PDF compilation. Figures retain the agreed scales, labels,
+seed bands, and legend placement. Output defaults to `dev_figures/production/`;
+`--output` may select another folder inside `dev_figures/`.
 
 ```bash
-python experiments.py plot --input results/runs --compile-tables
+python result_scripts/swing_highlight_table.py --input results/production/swing/parallel
+python result_scripts/swing_appendix_table.py --input results/production/swing/uncontended
+python result_scripts/swing_adaptation.py --input results/production/swing/parallel
+python result_scripts/swing_convergence.py --input results/production/swing/parallel
+python result_scripts/rate_ablation.py --input results/production/rate_ablation/parallel
+python result_scripts/ablation_eta_init.py --input results/production/eta_ablation/parallel
+python result_scripts/rate_ablation_table.py --input results/production/rate_ablation/parallel
 ```
 
-Or use the bundled data without running the solvers:
+The timing table **requires uncontended data**. Work and timing table cells show
+`---` unless every seed converges. Cost boxplots retain unsuccessful outcomes
+with crosses; the M=50 FOTD boxes remain omitted as requested, with those results
+still present in tables and raw records. Each artifact has a provenance JSON
+sidecar. Original manuscript files and figures are never output targets.
 
-```bash
-python experiments.py plot --archived --compile-tables
-```
+## Numerical contract
 
-Outputs go to `results/paper/`. Bundled records are in `data/*.json.gz`.
-Plots cover Figures 2–7 and Tables 1, 2, 4, 5, 6; Figure 1 and Table 3 are
-manuscript-only material, not experimental outputs.
-New runs use a 100-iteration inner cap. Use a fresh output root after changing
-settings. Bundled data represents the earlier implementation and is retained
-for historical comparisons; it does not validate the corrected solver.
+The Newton system uses the full Lagrangian Hessian with a stagewise eigenvalue
+floor. The merit derivative always uses the unshifted true Hessian. Local
+solves must satisfy the original, unpreconditioned residual criterion, including
+warm starts and sketch solves. Certification work remains included in FLOPs.
 
-### Corrected Hessian and residual checks
+There is one overlap/tolerance update law: exponential tightening with the
+uniform `1/sqrt(M)` term and overlap growth of at least one stage. Removed options
+include relaxed accuracy multipliers, Gauss–Newton direction selection,
+alternative update laws, EW forcing, and theta schedules. Unknown options fail
+at configuration loading. Epsilon clips to `epsilon_max/nu` only above the cap;
+the cap includes `(Psi*Upsilon)^2` and cannot be enlarged by a numerical floor.
 
-Swing now uses the **full Lagrangian Hessian** with a stagewise eigenvalue
-floor of `1e-6` for the Newton system. The true, unshifted Hessian differentiates
-the augmented merit in both the descent test and Armijo slope. Gauss–Newton
-remains an optional direction model; it never supplies the merit derivative.
+**Psi=Upsilon=1 are experimental constants**, not computed theoretical bounds.
+The overlap cap (110), local tolerance floor (1e-9), 50-pass acceptance budget,
+100-iteration local budget, and 25-iteration outer budget are explicit practical
+limits. Budget exhaustion or failed acceptance stops without applying a step.
+These experiments do not establish the manuscript's theoretical bounds merely
+by converging.
 
-Local convergence requires `norm(Gamma_i @ d_i - rhs_i) <= eps_i * norm(rhs_i)`
-in the original coordinates, including for warm starts and the sketch solver.
-Residual checks count toward work. Failed local solves, acceptance budgets,
-and line searches stop without applying the rejected direction. Swing keeps
-50 accuracy/descent passes, local iteration cap 100, and overlap cap 110.
+## Layout and historical material
 
-```bash
-PYTHONPATH=src python -m unittest discover -s tests -v
-python experiments.py smoke
-python experiments/swing/run_corrected_study.py --workers 4
-```
+Shared runner/configuration/reporting code lives in `src/newton/studies/`;
+solver code lives in `src/newton/`. There are exactly three IEEE39 runners,
+three study configs, and seven artifact entry points. The production checkout
+excludes `data/`, `tests/`, `dev_figures/`, and `results/`; the runners and
+renderers create their output directories as needed.
 
-The corrected study reruns all 160 Swing Newton-method cases (120 fixed and
-40 adaptive), and reuses only the unchanged nonlinear baselines. Outputs and
-a full acceptance audit are in `results/corrected_swing/`; start with
-`report.md`. Sketch RNG seed zero is reset per case, independently of scheduling.
-The smoke check validates a converged corrected case and its local/global
-certificates, rather than comparing work against the old implementation.
+Historical datasets, validation tests, and generated artifacts may be retained
+locally in the ignored directories. They are not required to run a fresh study.
+Old exploratory Swing/rate/eta entry points and the multipurpose `experiments.py`
+dispatcher were removed; historical reports may reference those retired scripts.
 
-At these budgets, each adaptive inner solver converges on 14/20 cases:
-5/5 for M=4 and M=10, 3/5 for M=20, and 1/5 for M=50. The other cases stop at
-the acceptance-pass budget. No applied step violates its required local or
-adaptive global checks. Every recorded Hessian shift is zero in this Swing
-study; a vanishing modification is not guaranteed for general problems by a
-stagewise positive-definiteness rule.
+Burgers entry points remain under `experiments/burgers/`. They now use the strict
+core and invalidate earlier cached solver records; their old numerical results
+have not been revalidated by this IEEE39 cleanup.
 
-The prior cap-only experiment is preserved in `results/cap_study/`: changing
-six passes to 50 under the old implementation reduced ungated steps from
-77/188 to 15/179 but did not eliminate them. That historical experiment and
-its `run_pass_cap_study.py` driver require the pre-correction solver source.
-
-Solver code is in `src/newton/`. `python experiments.py --help`
-lists all commands, including verification and a quick solver check.
-
-## Citation
-
-Placeholder—publication details will be added before the final release.
-
-```bibtex
-@misc{bhan_aotd,
-  author = {Bhan, Luke and Mahoney, Michael W. and Na, Sen},
-  title = {An Adaptive, Parallel, and Inexact Newton Method for
-           Large-scale Nonlinear Optimal Control},
-  note = {Citation placeholder: venue, year, and DOI to be added}
-}
-```
-
-## License
-
-Code is released under the [MIT License](LICENSE). University logos remain the
-property of their respective institutions and are not covered by this license;
-their display does not imply endorsement. See [asset sources](assets/README.md).
+Code is released under the [MIT License](LICENSE). University logos retain
+separate ownership; see [asset sources](assets/README.md).

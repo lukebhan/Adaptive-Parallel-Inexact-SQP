@@ -42,7 +42,7 @@ FOTD_QLP_TOL_BY_N = {10000: 1e-14, 50000: 1e-14}
 FOTD_QLP_MAX_INNER = 100
 FOTD_MAX_INNER_ITERS = 400  # FOTD-LU is direct -> cap irrelevant; kept for schema
 AOTD_MAX_INNER_ITERS = 100
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4  # Full Hessian and strict, unrelaxed acceptance.
 WORKERS_BY_N = {10000: 15, 50000: 6}
 CHECK_QLP_RESIDUALS = False
 
@@ -97,7 +97,6 @@ def make_config(newton_mod, method, b, M, horizon):
     common = dict(
         M=M,
         mu=MU,
-        gauss_newton=True,
         max_outer_iters=12,
         tol_kkt=1e-6,
         max_overlap=6000,
@@ -133,13 +132,9 @@ def make_config(newton_mod, method, b, M, horizon):
         b0=4,
         eps_i_0=1e-1,
         eps_i_floor=1e-9,
-        acc_relax=10.0,
-        adapt_mode="hybrid",
-        hybrid_b_min1=(horizon == 10000),  # Floor overlap growth only at N=10000.
         warm_start=True,
-        max_inner_passes=6,
+        max_inner_passes=50,
         nu=2.0,
-        b_step=4,
         varrho_b=10.0,
         varrho_eps=0.1,
         inner_solver="gmres_qlp",

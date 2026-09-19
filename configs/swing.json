@@ -1,0 +1,134 @@
+{
+  "schema": 1,
+  "study": "swing",
+  "description": "Corrected IEEE39 study; Psi=Upsilon=1 are experimental constants, not computed theoretical bounds.",
+  "problem": {
+    "N": 1000,
+    "dt": 0.1,
+    "mode": 1,
+    "pm_scale": 0.0,
+    "q_theta": 10.0,
+    "q_omega": 10.0,
+    "r_scale": 0.05,
+    "kick": 0.25,
+    "noise_std": 0.15,
+    "sketch_seed": 0
+  },
+  "algorithm": {
+    "M": 20,
+    "mu": 10.0,
+    "beta": 0.001,
+    "eta1_0": 0.01,
+    "eta2_0": 10,
+    "eps0": 1,
+    "eps_i_0": 0.1,
+    "eps_i_floor": 1e-09,
+    "b0": 4,
+    "max_overlap": 110,
+    "max_inner_passes": 50,
+    "max_outer_iters": 25,
+    "tol_kkt": 1e-06,
+    "tol_step": 1e-08,
+    "inner_solver": "gmres_qlp",
+    "inner_rank_tol": 1e-14,
+    "sketch_restart": 5,
+    "use_preconditioner": true,
+    "precond_type": "ilu_schur",
+    "ilu_drop_tol": 0.01,
+    "max_inner_iters": 100,
+    "xi_H": 1e-06,
+    "warm_start": true,
+    "cache_precond": false,
+    "freeze_precond": false,
+    "freeze_rebuild_ratio": 2.0,
+    "adaptive": true,
+    "nu": 1.01,
+    "varrho_b": 32.0,
+    "varrho_eps": 0.5,
+    "psi": 1.0,
+    "upsilon": 1.0,
+    "linesearch_max_backtracks": 30,
+    "verbose": false
+  },
+  "M": [
+    4,
+    10,
+    20,
+    50
+  ],
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "grid": {},
+  "baselines": {
+    "fixed": {
+      "M": 4,
+      "mu": 10.0,
+      "beta": 0.4,
+      "eta1_0": 10,
+      "eta2_0": 0.5,
+      "eps0": 0.05,
+      "eps_i_0": 1e-14,
+      "eps_i_floor": 1e-09,
+      "b0": 2,
+      "max_overlap": 110,
+      "max_inner_passes": 8,
+      "max_outer_iters": 25,
+      "tol_kkt": 1e-06,
+      "tol_step": 1e-08,
+      "inner_solver": "gmres_qlp",
+      "inner_rank_tol": 1e-14,
+      "sketch_restart": 5,
+      "use_preconditioner": true,
+      "precond_type": "ilu_schur",
+      "ilu_drop_tol": 0.01,
+      "max_inner_iters": 100,
+      "xi_H": 1e-06,
+      "warm_start": false,
+      "cache_precond": false,
+      "freeze_precond": false,
+      "freeze_rebuild_ratio": 2.0,
+      "adaptive": false,
+      "nu": 2.0,
+      "varrho_b": 32.0,
+      "varrho_eps": 0.5,
+      "psi": 1.0,
+      "upsilon": 1.0,
+      "linesearch_max_backtracks": 30,
+      "verbose": false
+    },
+    "overlaps": [
+      10,
+      40,
+      75
+    ],
+    "schwarz_overlaps": [
+      1,
+      10,
+      40,
+      75
+    ],
+    "ipopt": {
+      "tol_kkt": 1e-06,
+      "max_iters": 400
+    },
+    "schwarz": {
+      "mu_pen": 10.0,
+      "max_outer": 30,
+      "tol_kkt": 1e-06
+    },
+    "multishoot": {
+      "max_outer": 30,
+      "tol_kkt": 1e-06
+    },
+    "admm": {
+      "rho": 10.0,
+      "max_outer": 80,
+      "tol_kkt": 1e-06
+    }
+  }
+}
