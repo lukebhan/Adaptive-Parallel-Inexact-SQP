@@ -6,19 +6,18 @@
   <a href="https://www.berkeley.edu/"><img src="assets/uc-berkeley.svg" alt="UC Berkeley" width="200"></a>
 </p>
 
-<h1 align="center">AOTD</h1>
-<p align="center">Adaptive Overlapping Temporal Decomposition</p>
-<p align="center"><a href="LICENSE">MIT License</a> · Python 3.10+</p>
-
-Python solvers and experiments for **An Adaptive, Parallel, and Inexact Newton
-Method for Large-scale Nonlinear Optimal Control**. Generate your own results or
-use the bundled paper data.
+<h1 align="center">Adaptive Overlapping Temporal Decomposition (AOTD)</h1> 
 
 ![Burgers PDE results: overlap and tolerance adaptation, with computational cost across temporal decompositions.](assets/burgers-results.png)
 
 *Burgers PDE control at 10,000 and 50,000 time steps: adaptive overlaps and
 local solve tolerances (left, middle), and computational work across methods
 (right). Figure 5, using the archived five-seed experiments.*
+
+## About this repository
+
+This repository contains all the code for reproducing the experiments in the paper titled: **An Adaptive, Parallel, and Inexact Newton
+Method for Large-scale Nonlinear Optimal Control**. For any issues, or questions please make a Github issue or contact the authors at lbhan@ucsd.edu.
 
 ## Getting started
 
