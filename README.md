@@ -11,6 +11,8 @@ Parallel, and Inexact Newton Method for Large-scale Nonlinear Optimal Control*.
 
 ![Burgers convergence results for AOTD, FOTD (LU), and Schwarz](assets/burgers-results.png)
 
+<p align="center"><sub>Convergence on the viscous Burgers optimal control problem for horizons N = 10,000 and 50,000, with M = 10, 50, and 250 temporal subproblems. Curves compare AOTD, FOTD (LU) with fixed overlaps b = 10 and 50, and Schwarz with b = 50 (N = 10,000 only). Lower KKT residuals indicate closer satisfaction of the optimality conditions; the dotted line marks the convergence tolerance.</sub></p>
+
 ## Installation
 
 Run these commands from the repository root on Linux with Python 3.10 or newer.
@@ -100,6 +102,19 @@ environment, and execution mode, including recorded non-convergence. Changed
 inputs require a new output directory. A limited run is marked partial and
 can be completed by resuming without `--limit`. Do not point resume at the
 reference data: its original source and environment identities are preserved.
+
+## Citation
+
+Placeholder—publication details will be added before the final release.
+
+```bibtex
+@misc{bhan_aotd,
+  author = {Bhan, Luke and Mahoney, Michael W. and Na, Sen},
+  title = {An Adaptive, Parallel, and Inexact Newton Method for
+           Large-scale Nonlinear Optimal Control},
+  note = {Citation placeholder: venue, year, and DOI to be added}
+}
+```
 
 ## Repository layout
 
