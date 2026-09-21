@@ -3,6 +3,14 @@
 Reference implementation and reproducible experiments for *An Adaptive,
 Parallel, and Inexact Newton Method for Large-scale Nonlinear Optimal Control*.
 
+<p align="center">
+  <img src="assets/uc-san-diego.png" alt="UC San Diego" width="180">&nbsp;&nbsp;&nbsp;
+  <img src="assets/georgia-tech.png" alt="Georgia Tech" width="180">&nbsp;&nbsp;&nbsp;
+  <img src="assets/uc-berkeley.svg" alt="UC Berkeley" width="180">
+</p>
+
+![Burgers convergence results for AOTD, FOTD (LU), and Schwarz](assets/burgers-results.png)
+
 ## Installation
 
 Run these commands from the repository root on Linux with Python 3.10 or newer.
