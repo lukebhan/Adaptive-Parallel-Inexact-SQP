@@ -1,5 +1,4 @@
-"""Armijo backtracking line search on the augmented-Lagrangian merit
-(mirror of src/backtrack.jl)."""
+"""Armijo backtracking line search on the augmented-Lagrangian merit"""
 
 from .ComputeKKT import n_z
 from .CalculateAug import merit

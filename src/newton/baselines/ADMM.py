@@ -150,7 +150,7 @@ def solve_admm(
         if kkt <= tol_kkt:
             converged, stop = True, "kkt"
             break
-        if step <= tol_step and it > 1:  # iterate-change convergence (Δ<1e-3)
+        if step <= tol_step and it > 1:
             converged, stop = True, "step"
             break
     z = pack_traj(prob, X, U)

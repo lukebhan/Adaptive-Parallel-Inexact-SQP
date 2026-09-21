@@ -163,7 +163,7 @@ def solve_opti(opti, x, u, x_init, u_init, tol=1e-8, max_iters=200, verbose=Fals
         "sb": "yes",
     }
     if verbose:
-        iopts["print_frequency_iter"] = 1  # one table line per iteration, live
+        iopts["print_frequency_iter"] = 1
     opti.solver("ipopt", {"print_time": bool(verbose), "ipopt": iopts})
     try:
         sol = opti.solve()

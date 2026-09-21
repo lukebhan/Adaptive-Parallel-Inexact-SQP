@@ -1,7 +1,8 @@
 """Augmented merit: L + eta1/2 ||grad_lambda L||^2 + eta2/2 ||grad_z L||^2."""
 
 import numpy as np
-from .ComputeKKT import grad_lagrangian, lagrangian, constraint_jacobian
+import scipy.sparse as sp
+from .ComputeKKT import grad_lagrangian, lagrangian, constraint_jacobian, hessian_blocks
 
 
 def merit(p, z, lam, eta1, eta2, G=None):
@@ -11,7 +12,13 @@ def merit(p, z, lam, eta1, eta2, G=None):
 
 
 def grad_merit(p, z, lam, eta1, eta2, H=None, G=None):
-    """Uses the *unmodified* Lagrangian Hessian H (modification only affects the solve)."""
+    """Differentiate the merit using the true Lagrangian Hessian.
+
+    H, if supplied for reuse, must include dynamics curvature and no solve
+    regularization. A Gauss--Newton or shifted matrix is not this derivative.
+    """
+    if H is None:
+        H = sp.block_diag(hessian_blocks(p, z, lam, gauss_newton=False), format="csr")
     grad_z, grad_lam = grad_lagrangian(p, z, lam, G=G)
     if G is None:
         G = constraint_jacobian(p, z)

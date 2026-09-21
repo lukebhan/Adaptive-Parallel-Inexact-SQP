@@ -1,5 +1,5 @@
 """Composition (C) and decomposition (D) operators + knot helpers
-(mirror of src/composition.jl). 0-indexed knots."""
+Knots use zero-based indices."""
 
 import numpy as np
 from .ComputeKKT import x_indices, u_indices, lam_indices, z_size, lam_size
