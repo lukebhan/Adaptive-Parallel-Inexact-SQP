@@ -1,4 +1,4 @@
-"""Shared baseline result + KKT-residual helpers (mirror of src/baselines/common.jl)."""
+"""Shared baseline results and KKT-residual helpers."""
 
 from dataclasses import dataclass, field
 import numpy as np

@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "study": "eta_ablation",
-  "description": "Corrected IEEE39 study; Psi=Upsilon=1 are experimental constants, not computed theoretical bounds. Figure 7 uses (32,0.6); this is distinct from the headline (32,0.5).",
+  "study": "rate_ablation",
+  "description": "IEEE 39-bus AOTD adaptation-rate ablation.",
   "problem": {
     "N": 1000,
     "dt": 0.1,
@@ -17,13 +17,13 @@
   "algorithm": {
     "M": 20,
     "mu": 10.0,
-    "beta": 0.0001,
+    "beta": 0.001,
     "eta1_0": 0.01,
     "eta2_0": 10,
     "eps0": 1,
     "eps_i_0": 0.1,
     "eps_i_floor": 1e-09,
-    "b0": 4,
+    "b0": 10,
     "max_overlap": 110,
     "max_inner_passes": 50,
     "max_outer_iters": 25,
@@ -44,7 +44,7 @@
     "adaptive": true,
     "nu": 1.01,
     "varrho_b": 32.0,
-    "varrho_eps": 0.6,
+    "varrho_eps": 0.5,
     "psi": 1.0,
     "upsilon": 1.0,
     "linesearch_max_backtracks": 30,
@@ -54,24 +54,24 @@
     20
   ],
   "seeds": [
-    1
+    1,
+    2,
+    3,
+    4,
+    5
   ],
   "grid": {
-    "eta1_0": [
-      12.0,
-      13.0,
-      14.0
+    "varrho_b": [
+      1.0,
+      2.0,
+      4.0,
+      32.0
     ],
-    "eta2_0": [
-      0.15,
-      0.2,
-      0.25
-    ],
-    "nu": [
-      1.075,
-      1.1,
-      1.15,
-      1.2
+    "varrho_eps": [
+      0.1,
+      0.25,
+      0.5,
+      1.0
     ]
   },
   "baselines": {}

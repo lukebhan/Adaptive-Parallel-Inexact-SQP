@@ -107,7 +107,7 @@ def solve_multishoot(
         if kkt <= tol_kkt:
             converged, stop = True, "kkt"
             break
-        if step <= tol_step:  # iterate-change convergence (Δ<1e-6)
+        if step <= tol_step:
             converged, stop = True, "step"
             break
     z = pack_traj(prob, X, U)

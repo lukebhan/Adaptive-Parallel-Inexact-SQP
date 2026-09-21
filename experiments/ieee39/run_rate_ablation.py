@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the configured swing study; use --help for execution modes."""
+"""Run the configured IEEE39 rate-ablation study; use --help for execution modes."""
 
 import os
 from pathlib import Path
@@ -13,7 +13,7 @@ for name in (
 ):
     os.environ[name] = "1"
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from newton.studies.runner import main
+from newton.studies.ieee39.runner import main
 
 if __name__ == "__main__":
-    main("swing")
+    main("rate_ablation")

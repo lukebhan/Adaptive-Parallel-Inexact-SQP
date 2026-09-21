@@ -48,7 +48,7 @@ class AlgorithmConfig:
     eps_i_0: float = 1e-1  # per-subproblem inner tol initial
     eps_i_floor: float = 1e-9
     b0: int = 2  # initial overlap
-    max_overlap: int = 45  # b cap (Python: N/(2M)+25)
+    max_overlap: int = 45  # Maximum allowed overlap.
     max_inner_passes: int = 8
     max_outer_iters: int = 15
     tol_kkt: float = 1e-6
@@ -70,10 +70,10 @@ class AlgorithmConfig:
     )
     cache_precond: bool = False  # reuse assembled Gi + preconditioner across inner passes while the window (m1,m2) is unchanged
     freeze_precond: bool = (
-        False  # build the preconditioner ONCE and reuse it across ALL outer iterations
+        False  # Reuse factors across outer iterations while their dimensions match.
     )
-    # (lagged/frozen preconditioner); rebuilt only if Krylov counts degrade past
-    # freeze_rebuild_ratio. Meant for FIXED b (constant window ⇒ constant dim).
+    # Rebuild frozen factors when Krylov counts exceed
+    # freeze_rebuild_ratio times the fresh-build count.
     freeze_rebuild_ratio: float = 2.0  # rebuild the frozen preconditioner once iters exceed this × the post-build count
     adaptive: bool = True
     nu: float = 2.0  # adaptation rate ν for η-updates (29)-(30)
@@ -144,7 +144,7 @@ def run_algorithm(prob, cfg, z0, lam0):
     stop_reason = "max_iters"
     grad_L_norm = np.inf
     tau = 0
-    trajectory = []  # per-outer records
+    trajectory = []
     # wall-clock phase accumulators (serial) + critical-path (parallel) sub-solve
     T = dict(
         assemble=0.0,
@@ -159,7 +159,7 @@ def run_algorithm(prob, cfg, z0, lam0):
         if cfg.verbose:
             print(s, flush=True)
 
-    _frozen_pc = {}  # cfg.freeze_precond: preconditioner reused ACROSS outers
+    _frozen_pc = {}  # Frozen preconditioners persist across outer iterations.
     _frozen_iters0 = {}  # Krylov count right after each frozen build (staleness gauge)
 
     for tau in range(cfg.max_outer_iters):
@@ -228,7 +228,7 @@ def run_algorithm(prob, cfg, z0, lam0):
                         and _frozen_pc[i].shape[0] == _ndof
                     )  # reuse across outers if dim matches
                     if frozen:
-                        M = _frozen_pc[i]  # lagged preconditioner: skip the rebuild
+                        M = _frozen_pc[i]
                     elif cfg.use_preconditioner and cfg.inner_solver in (
                         "gmres_qlp",
                         "minres",
@@ -249,7 +249,7 @@ def run_algorithm(prob, cfg, z0, lam0):
                             # keep the base ILU across passes; border it for the grown endpoints
                             # (rebuild fully only when Krylov counts degrade — safeguard below)
                             entry = _bilu_cache.get(i)
-                            if entry is None:  # first pass this outer → full base build
+                            if entry is None:
                                 M = bordered_ilu_preconditioner(
                                     lH,
                                     lG,
@@ -261,7 +261,7 @@ def run_algorithm(prob, cfg, z0, lam0):
                                     drop_tol=cfg.ilu_drop_tol,
                                 )
                                 _bilu_cache[i] = {"pc": M, "base_iters": None}
-                                pc_build_flop = M.last_build_flops  # full spilu, once
+                                pc_build_flop = M.last_build_flops
                             else:
                                 M = entry["pc"]
                                 if (
@@ -275,17 +275,13 @@ def run_algorithm(prob, cfg, z0, lam0):
                                         sub.m1,
                                         sub.m2,
                                     )
-                                    pc_build_flop = (
-                                        M.last_build_flops
-                                    )  # cheap: reuse interior ILU
+                                    pc_build_flop = M.last_build_flops
                         else:
                             M = schur_approx_preconditioner(
                                 lH, lG, n_z_local(sub), n_lam_local(sub)
                             )
                             pc_build_flop = M.build_flops
-                        if (
-                            cfg.freeze_precond and M is not None
-                        ):  # store for reuse across future outers
+                        if cfg.freeze_precond and M is not None:
                             _frozen_pc[i] = M
                             _frozen_iters0[i] = None
                     if cfg.cache_precond:
@@ -348,10 +344,10 @@ def run_algorithm(prob, cfg, z0, lam0):
                 total_inner_iters += info["iters"]
                 ostat["matvecs"] += mv
                 ostat["inner_iters"] += info["iters"]
-                if info.get("factorizations", 0):  # direct solve
+                if info.get("factorizations", 0):
                     flop = banded_factor_flops(Gi.shape[0], 2 * bs.N_X + bs.N_U)
                     flop += 2.0 * info["matvecs"] * Gi.nnz
-                else:  # gmres_qlp / minres / sketch
+                else:
                     if (
                         "algo_flops" in info
                     ):  # sketch: measured matvec + sketch/LSQ work
@@ -383,7 +379,7 @@ def run_algorithm(prob, cfg, z0, lam0):
             ostat["compose"] += time.perf_counter() - t_c
             return comp
 
-        pass_log = []  # per-pass diagnostics (this outer)
+        pass_log = []
         if not cfg.adaptive:
             # FOTD: one exact solve per outer
             dz, dl = solve_all(b_list, eps_i_list, exact=True)

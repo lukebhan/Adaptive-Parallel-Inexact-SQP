@@ -6,9 +6,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from ..AOTD import AlgorithmConfig
+from ...AOTD import AlgorithmConfig
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 STUDIES = ("swing", "rate_ablation", "eta_ablation")
 
 
@@ -21,12 +21,19 @@ def digest(value):
 
 
 def source_hash():
-    paths = sorted((ROOT / "src/newton").rglob("*.py"))
-    paths = [
-        p
-        for p in paths
-        if "studies" not in p.parts or p.name in ("runner.py", "spec.py")
+    core = [
+        path
+        for path in sorted((ROOT / "src/newton").rglob("*.py"))
+        if "studies" not in path.parts
     ]
+    paths = sorted(
+        core
+        + [
+            Path(__file__),
+            Path(__file__).with_name("runner.py"),
+            Path(__file__).parents[1] / "common.py",
+        ]
+    )
     return hashlib.sha256(
         b"".join(str(p.relative_to(ROOT)).encode() + p.read_bytes() for p in paths)
     ).hexdigest()
@@ -108,7 +115,7 @@ def load_config(path, study):
     elif config["baselines"]:
         raise ValueError("Ablations do not have baseline jobs")
     if study == "eta_ablation" and len(config["seeds"]) != 1:
-        raise ValueError("Eta figure requires one seed per initialization")
+        raise ValueError("Eta study requires one seed per initialization")
     if study != "swing" and len(config["M"]) != 1:
         raise ValueError("Ablations require one M")
     # Complete defaults in the saved manifest; hashes include every effective setting.
@@ -185,12 +192,16 @@ def audit(row):
     """Reject records that apply an uncertified step, including resumed records."""
     for step in row.get("trajectory", []):
         if step["step_applied"]:
-            last = step["passes"][-1]
+            passes = step["passes"]
+            if not passes:
+                raise ValueError("Applied step has no local-solve certificate")
             if not all(
                 c["converged"] and c["residual_norm"] <= c["residual_threshold"]
-                for c in last["local_solves"]
+                for pass_record in passes
+                for c in pass_record["local_solves"]
             ):
                 raise ValueError("Applied step fails original-system local accuracy")
+            last = passes[-1]
             if row["config"]["adaptive"] and not (
                 last["outcome"] == "accept"
                 and last["r_norm"] <= last["acc_rhs"]

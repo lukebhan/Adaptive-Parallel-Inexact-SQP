@@ -1,1 +1,1 @@
-"""Validated IEEE39 studies and artifact generation."""
+"""Problem-specific experiment runners and configurations."""

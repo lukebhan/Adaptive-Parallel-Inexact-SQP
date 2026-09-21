@@ -7,7 +7,6 @@ from scipy.linalg import qr, solve_triangular, lu_factor, lu_solve
 from . import burgers_setting as bs
 
 
-# ====================== preconditioners ======================
 class SchurApproxPreconditioner:
     """Block-diagonal inverse of diag(H) and regularized stage Schur blocks."""
 
@@ -84,7 +83,7 @@ class ILUSchurPreconditioner:
 def ilu_schur_preconditioner(
     H_blocks, G, n_z_local, n_lam_local, drop_tol=1e-2, fill_factor=20
 ):
-    """Build the ILU-Schur preconditioner (mirror of schur_approx_preconditioner's S)."""
+    """Build an ILU preconditioner for the stage Schur complement."""
     Hd = np.concatenate([np.diag(np.asarray(Hb)) for Hb in H_blocks])
     A = (G @ sp.diags(1.0 / Hd)).tocsr()  # column-scale G: nnz(G) mults
     Sm = (A @ G.T).tocsc()
@@ -100,7 +99,7 @@ def ilu_schur_preconditioner(
 
 
 def _build_schur(H_blocks, G):
-    """Schur complement S = G diag(H)⁻¹ Gᵀ (csc) and Hinv diagonal — mirror of the ILU build."""
+    """Return the CSC Schur complement G diag(H)⁻¹ Gᵀ and inverse diagonal."""
     Hd = np.concatenate([np.diag(np.asarray(Hb)) for Hb in H_blocks])
     Hinv = 1.0 / Hd
     S = (G @ sp.diags(Hinv) @ G.T).tocsc()
@@ -115,9 +114,9 @@ class BorderedILUSchur:
     def __init__(self, base_ilu, Hinv, n_z, n_lam, base_m1, base_m2, nx):
         self.base_ilu = base_ilu
         self.Hinv = Hinv  # current full primal diag(H)⁻¹
-        self.n_z, self.n_lam = n_z, n_lam  # current sizes
+        self.n_z, self.n_lam = n_z, n_lam
         self.base_m1, self.base_m2 = base_m1, base_m2
-        self.m1, self.m2 = base_m1, base_m2  # current window
+        self.m1, self.m2 = base_m1, base_m2
         self.nx = nx
         self.int_idx = None
         self.bord_idx = None
@@ -126,7 +125,7 @@ class BorderedILUSchur:
         self.shape = (n_z + n_lam, n_z + n_lam)
         self.build_flops = 0.0  # full spilu cost (set by the factory at base build)
         self.last_build_flops = (
-            0.0  # work done on the MOST RECENT build/extend this pass
+            0.0  # Work charged to the most recent build or extension.
         )
         self.apply_flops = float(n_z) + 2.0 * float(base_ilu.nnz)
 
@@ -156,9 +155,7 @@ class BorderedILUSchur:
         Scsr = S.tocsr()
         E = Scsr[ii][:, bb]  # interior × border (SPARSE, kept for apply)
         C = Scsr[bb][:, bb].toarray()  # border × border (small dense)
-        Gd = self.base_ilu.solve(
-            E.toarray()
-        )  # M_b⁻¹E — dense, formed ONCE only to build H
+        Gd = self.base_ilu.solve(E.toarray())  # M_b⁻¹E, formed once to build H.
         self.E = E.tocsr()
         self.H_lu = lu_factor(
             C - self.E.T @ Gd
@@ -213,7 +210,7 @@ def bordered_ilu_preconditioner(
 
 
 def spectral_norm_2(Gamma, iters=10, seed=0):
-    """‖Γ‖₂ via power iteration on ΓᵀΓ (matches Python reference `spectral_norm`)."""
+    """Estimate ‖Γ‖₂ by power iteration on ΓᵀΓ."""
     rng = np.random.default_rng(seed)
     n = Gamma.shape[1]
     v = rng.standard_normal(n)
@@ -229,7 +226,6 @@ def spectral_norm_2(Gamma, iters=10, seed=0):
     return lam
 
 
-# ====================== GMRES-QLP (ported) ======================
 def qlp_min_length(H, c, rank_tol=1e-10):
     """Min-length least-squares of min‖c − H y‖ via QLP (pivoted QR → LQ)."""
     p, m = H.shape
@@ -251,7 +247,13 @@ def qlp_min_length(H, c, rank_tol=1e-10):
 
 
 def gmres_qlp_core(
-    matvec, b, rtol=1e-6, maxit=0, rank_tol=1e-10, check_every=5, reorth=True,
+    matvec,
+    b,
+    rtol=1e-6,
+    maxit=0,
+    rank_tol=1e-10,
+    check_every=5,
+    reorth=True,
     residual_check=None,
 ):
     """Solve matvec(x)=b (possibly nonsymmetric/singular). Returns (x, iters, rel)."""
@@ -295,7 +297,6 @@ def gmres_qlp_core(
     return x, maxit, rel
 
 
-# ====================== solver wrappers ======================
 def _info(iters, matvecs, fac, hist, cap):
     return dict(
         iters=iters,
@@ -315,7 +316,9 @@ def _certify_residual(info, residual, rhs, tol):
         residual_norm=norm,
         rhs_norm=rhs_norm,
         residual_threshold=threshold,
-        relative_residual=norm / rhs_norm if rhs_norm else (0.0 if norm == 0 else float("inf")),
+        relative_residual=norm / rhs_norm
+        if rhs_norm
+        else (0.0 if norm == 0 else float("inf")),
         converged=bool(np.isfinite(norm) and norm <= threshold),
     )
     return info
@@ -323,7 +326,9 @@ def _certify_residual(info, residual, rhs, tol):
 
 def solve_direct(Gamma, rhs, **kw):
     d = spla.spsolve(sp.csc_matrix(Gamma), rhs)
-    info = _certify_residual(_info(1, 1, 1, None, False), Gamma @ d - rhs, rhs, kw.get("tol", 1e-12))
+    info = _certify_residual(
+        _info(1, 1, 1, None, False), Gamma @ d - rhs, rhs, kw.get("tol", 1e-12)
+    )
     return d, info
 
 
@@ -362,16 +367,24 @@ def solve_gmres_qlp(Gamma, rhs, tol, max_iters, M=None, x0=None, rank_tol=1e-12,
         delta, it = np.zeros_like(rhs), 0
     else:
         delta, it, _ = gmres_qlp_core(
-            lambda v: apply(physical_matvec(v)), apply(residual0),
-            maxit=max_iters, rank_tol=rank_tol, check_every=5, residual_check=check,
+            lambda v: apply(physical_matvec(v)),
+            apply(residual0),
+            maxit=max_iters,
+            rank_tol=rank_tol,
+            check_every=5,
+            residual_check=check,
         )
     d = base + delta
     residual = physical_matvec(d) - rhs
     info = _certify_residual(_info(it, mv, 0, history, False), residual, rhs, tol)
-    info['cap_hit'] = bool(it >= max_iters and not info['converged'])
-    info['termination'] = 'converged' if info['converged'] else ('max_iters' if info['cap_hit'] else 'breakdown')
-    info['preconditioner_applications'] = pc
-    info['algo_flops'] = 2.0 * mv * Gamma.nnz + 2.0 * it * it * len(rhs)
+    info["cap_hit"] = bool(it >= max_iters and not info["converged"])
+    info["termination"] = (
+        "converged"
+        if info["converged"]
+        else ("max_iters" if info["cap_hit"] else "breakdown")
+    )
+    info["preconditioner_applications"] = pc
+    info["algo_flops"] = 2.0 * mv * Gamma.nnz + 2.0 * it * it * len(rhs)
     return d, info
 
 
@@ -467,9 +480,13 @@ def solve_sketch(Gamma, rhs, tol, max_iters, M=None, x0=None, restart=20, **kw):
         algo_flops += 2.0 * s * n * m + 2.0 * s * n + 2.0 * s * m * m + 2.0 * n * m
     algo_flops += 2.0 * mv * nnz  # Γ matvecs (precond apply added by caller)
     info = _certify_residual(_info(mv, mv, 0, history, False), residual, rhs, tol)
-    info['cap_hit'] = bool(mv >= max_iters - 1 and not info['converged'])
-    info['termination'] = 'converged' if info['converged'] else ('max_iters' if info['cap_hit'] else 'breakdown')
-    info['preconditioner_applications'] = pc
+    info["cap_hit"] = bool(mv >= max_iters - 1 and not info["converged"])
+    info["termination"] = (
+        "converged"
+        if info["converged"]
+        else ("max_iters" if info["cap_hit"] else "breakdown")
+    )
+    info["preconditioner_applications"] = pc
     info["algo_flops"] = algo_flops
     return d, info
 
@@ -488,9 +505,13 @@ def solve(method, Gamma, rhs, tol, max_iters, M=None, **kw):
     if method not in SOLVER_DISPATCH:
         raise ValueError(f"unknown solver: {method}; options: {list(SOLVER_DISPATCH)}")
     if tol < 0 or not np.isfinite(tol) or max_iters < 1:
-        raise ValueError("tol must be finite and nonnegative; max_iters must be positive")
-    d, info = SOLVER_DISPATCH[method](Gamma, rhs, tol=tol, max_iters=max_iters, M=M, **kw)
-    if 'converged' not in info:
+        raise ValueError(
+            "tol must be finite and nonnegative; max_iters must be positive"
+        )
+    d, info = SOLVER_DISPATCH[method](
+        Gamma, rhs, tol=tol, max_iters=max_iters, M=M, **kw
+    )
+    if "converged" not in info:
         _certify_residual(info, Gamma @ d - rhs, rhs, tol)
-        info['matvecs'] += 1
+        info["matvecs"] += 1
     return d, info

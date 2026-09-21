@@ -18,7 +18,7 @@ def solve_ipopt(prob, tol_kkt=1e-6, max_iters=200, verbose=False, method="IPOPT"
     N = prob.N
     t0 = time.time()
     opti, x, u = _nlp.make_opti(prob, N)
-    opti.subject_to(x[0, :].T == prob.x0)  # initial condition
+    opti.subject_to(x[0, :].T == prob.x0)
     obj = _nlp.stage_cost(
         x, u, prob, [prob.x_des[k] for k in range(N)], N
     ) + _nlp.terminal_cost(x, prob, prob.x_des[N], N)

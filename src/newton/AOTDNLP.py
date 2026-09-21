@@ -90,8 +90,8 @@ def build_local_jacobian_sparse(local_A, local_B, nL):
         (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
         shape=(lam_size(nL), z_size(nL)),
     )
-    G.eliminate_zeros()  # drop explicit zeros so nnz matches the np.nonzero reference
-    return G  # (identical structural sparsity -> FLOP model unchanged)
+    G.eliminate_zeros()  # Exclude structural zeros from the sparse FLOP count.
+    return G
 
 
 def assemble(sub, prob, H_blocks, A_list, B_list, grad_z, f, lam):
@@ -113,7 +113,6 @@ def assemble(sub, prob, H_blocks, A_list, B_list, grad_z, f, lam):
         Q_m2 = H_blocks[sub.m2][:nx, :nx]
         local_H[nL] = Q_m2 + sub.mu * np.eye(nx)
 
-    # 2) local Jacobian
     local_A = [A_list[k] for k in range(sub.m1, sub.m2)]
     local_B = [B_list[k] for k in range(sub.m1, sub.m2)]
     G_i = build_local_jacobian_sparse(local_A, local_B, nL)

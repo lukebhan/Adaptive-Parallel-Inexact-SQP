@@ -2,13 +2,10 @@
 
 import argparse
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import importlib
 import json
-import logging
-import os
 from pathlib import Path
 import platform
 import signal
@@ -20,54 +17,15 @@ import numpy as np
 import scipy
 import casadi
 import newton as N
-from ..baselines.common import initial_guess, pack_traj
+from ...baselines.common import initial_guess, pack_traj
+from ..common import (
+    add_execution_arguments,
+    worker_count,
+    atomic_json,
+    progress_logger,
+    scenario_log,
+)
 from .spec import ROOT, audit, digest, jobs, load_config, source_hash
-
-
-def atomic_json(path, value):
-    path = Path(path)
-    temporary = path.with_suffix(f".{os.getpid()}.tmp")
-    temporary.write_text(
-        json.dumps(value, indent=2, default=float, allow_nan=False) + "\n"
-    )
-    temporary.replace(path)
-
-
-def progress_logger(output):
-    logger = logging.getLogger("swing.progress")
-    logger.setLevel(logging.INFO)
-    for handler in logger.handlers[:]:
-        handler.close()
-        logger.removeHandler(handler)
-    for handler in (
-        logging.StreamHandler(),
-        logging.FileHandler(output / "progress.log"),
-    ):
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S")
-        )
-        logger.addHandler(handler)
-    logger.propagate = False
-    return logger
-
-
-@contextmanager
-def scenario_log(path):
-    """Capture Python and native Ipopt output, line buffered, without interleaving."""
-    sys.stdout.flush()
-    sys.stderr.flush()
-    saved = [os.dup(fd) for fd in (1, 2)]
-    with open(path, "a", buffering=1, encoding="utf-8") as stream:
-        try:
-            for fd in (1, 2):
-                os.dup2(stream.fileno(), fd)
-            yield
-        finally:
-            sys.stdout.flush()
-            sys.stderr.flush()
-            for fd, old in zip((1, 2), saved):
-                os.dup2(old, fd)
-                os.close(old)
 
 
 def execute(job, output, identity, resume):
@@ -206,61 +164,22 @@ def solve_job(job):
 
 
 def main(study):
-    parser = argparse.ArgumentParser(
-        description=f"Run the corrected IEEE39 {study} study."
-    )
+    parser = argparse.ArgumentParser(description=f"Run the IEEE39 {study} study.")
     parser.add_argument(
-        "--config", type=Path, default=ROOT / "configs" / f"{study}.json"
+        "--config",
+        type=Path,
+        default=ROOT / "configs" / "ieee39" / f"{study}.json",
     )
-    modes = parser.add_mutually_exclusive_group(required=True)
-    modes.add_argument(
-        "--uncontended",
-        action="store_true",
-        help="Sequential scenarios; one BLAS thread; timing eligible.",
-    )
-    modes.add_argument(
-        "--parallel",
-        action="store_true",
-        help="Concurrent scenarios; timings excluded from tables.",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        help="Number of concurrent scenarios (parallel only; default 4).",
-    )
-    parser.add_argument("--output", type=Path)
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Reuse only matching verified records, including unsuccessful solves.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Validate and list jobs without running solvers.",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        help="Run the first n jobs for validation; result remains partial.",
-    )
+    add_execution_arguments(parser)
     args = parser.parse_args()
-    if args.uncontended and args.workers is not None:
-        parser.error("--workers is only valid with --parallel")
-    workers = args.workers or (1 if args.uncontended else 4)
-    if (
-        workers < 1
-        or (args.workers is not None and args.workers < 1)
-        or (args.limit is not None and args.limit < 1)
-    ):
-        parser.error("workers and limit must be positive")
+    workers = worker_count(parser, args)
     config = load_config(args.config, study)
     scenarios = jobs(config)
     selected = scenarios[: args.limit] if args.limit else scenarios
     mode = "uncontended" if args.uncontended else "parallel"
-    output = (args.output or ROOT / "results/production" / study / mode).resolve()
-    if not output.is_relative_to(ROOT / "results"):
-        parser.error("Output must be inside the dev repository results/ directory")
+    output = (args.output or ROOT / "runs" / "ieee39" / study / mode).resolve()
+    if not output.is_relative_to(ROOT / "runs"):
+        parser.error("Output must be inside the repository runs/ directory")
     if args.dry_run:
         print(
             json.dumps(
@@ -280,10 +199,10 @@ def main(study):
     output.mkdir(parents=True, exist_ok=True)
     for directory in ("records", "logs"):
         (output / directory).mkdir(exist_ok=True)
-    # Coordinate our own experiments: uncontended excludes ALL other study runners.
+    # An exclusive lock prevents other repository studies during timing runs.
     # External machine load still needs to be controlled by the operator.
     with (
-        open(ROOT / "results/.study_execution.lock", "a") as machine_lock,
+        open(ROOT / "runs/.study_execution.lock", "a") as machine_lock,
         open(output / ".lock", "a") as out_lock,
     ):
         try:

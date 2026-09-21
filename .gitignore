@@ -2,13 +2,37 @@
 __pycache__/
 *.pyc
 *.egg-info/
-results/
 build/
 dist/
 .matplotlib/
 .ruff_cache/
 
-# Local data, validation, and generated artifacts are not part of production.
-data/
-tests/
+# Include only the release reference datasets.
+data/*
+!data/reference/
+data/reference/**
+!data/reference/**/
+!data/reference/**/manifest.json.gz
+
+# Generated outputs and local execution history.
+artifacts/
+runs/
+results/
+records/
+logs/
 dev_figures/
+*.log
+*.lock
+
+# Local validation utilities.
+tests/
+
+# Local figure and table generators.
+result_scripts/
+src/newton/studies/burgers/artifacts.py
+src/newton/studies/burgers/results.py
+src/newton/studies/ieee39/artifacts.py
+src/newton/studies/ieee39/eta_results.py
+src/newton/studies/ieee39/rate_results.py
+src/newton/studies/ieee39/rate_table.py
+src/newton/studies/ieee39/swing_results.py

@@ -7,7 +7,6 @@ from .burgers import make_step_fns
 from .eval_stats import bump
 
 
-# index helpers (0-indexed, half-open slices)
 def x_indices(k):
     return slice(k * (bs.N_X + bs.N_U), k * (bs.N_X + bs.N_U) + bs.N_X)
 
@@ -62,7 +61,6 @@ def xdes_row(p, k):
     return p.x_des[k]
 
 
-# cost
 def cost(p, z):
     bump("cost")
     total = 0.0
@@ -72,7 +70,7 @@ def cost(p, z):
         total += dx @ (p.Q @ dx) + uk @ (p.R @ uk)
     dxN = z[x_indices(p.N)] - xdes_row(p, p.N)
     total += dxN @ (p.QN @ dxN)
-    return 0.5 * total  # ½ convention (matches paper/Python)
+    return 0.5 * total
 
 
 def grad_cost(p, z):
@@ -96,7 +94,6 @@ def cost_hess_block_terminal(p):
     return np.array(p.QN, dtype=float)
 
 
-# rollout
 def rollout(p, x0, u_seq):
     """Forward rollout from x0 with controls u_seq (N, N_U) → flat z."""
     bump("rollout")
@@ -111,7 +108,6 @@ def rollout(p, x0, u_seq):
     return z
 
 
-# constraints
 def constraint_residual(p, z):
     """f: f[0]=x_0 - x0_given; f[k+1]=x_{k+1} - F(x_k,u_k)."""
     bump("constraint")
@@ -155,7 +151,6 @@ def constraint_jacobian(p, z, A_list=None, B_list=None):
     return sp.csr_matrix((vals, (rows, cols)), shape=(n_lam(p), n_z(p)))
 
 
-# Lagrangian gradient / Hessian
 def grad_lagrangian(p, z, lam, G=None):
     bump("grad_L")
     f = constraint_residual(p, z)
@@ -245,5 +240,5 @@ def assemble_kkt(H_blocks, G):
     Gamma = sp.csr_matrix(
         (np.concatenate(D), (np.concatenate(R), np.concatenate(C))), shape=(n, n)
     )
-    Gamma.eliminate_zeros()  # match reference nnz (dense-H structural zeros)
+    Gamma.eliminate_zeros()  # Exclude structural zeros from the sparse FLOP count.
     return Gamma
