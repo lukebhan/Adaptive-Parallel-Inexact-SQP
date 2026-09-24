@@ -25,7 +25,7 @@
     "eps_i_floor": 1e-09,
     "b0": 10,
     "max_overlap": 110,
-    "max_inner_passes": 50,
+    "max_inner_passes": 100,
     "max_outer_iters": 25,
     "tol_kkt": 1e-06,
     "tol_step": 1e-08,
