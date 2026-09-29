@@ -1,7 +1,8 @@
 # Adaptive Overlapping Temporal Decomposition
 
-Reference implementation and reproducible experiments for *An Adaptive,
-Parallel, and Inexact Newton Method for Large-scale Nonlinear Optimal Control*.
+Reference implementation and reproducible experiments for [*An Adaptive, Parallel, and Inexact Newton Method for Large-scale Nonlinear Optimal Control*][paper].
+
+[paper]: https://arxiv.org/abs/2609.33206
 
 <p align="center">
   <img src="assets/uc-san-diego.png" alt="UC San Diego" width="180">&nbsp;&nbsp;&nbsp;
@@ -92,11 +93,15 @@ The four compressed manifests under `data/reference/burgers/` and
 Placeholder—publication details will be added before the final release.
 
 ```bibtex
-@misc{bhan_aotd,
-  author = {Bhan, Luke and Mahoney, Michael W. and Na, Sen},
-  title = {An Adaptive, Parallel, and Inexact Newton Method for
-           Large-scale Nonlinear Optimal Control},
-  note = {Citation placeholder: venue, year, and DOI to be added}
+@misc{bhan2026adaptiveparallelinexactnewton,
+      title={{An Adaptive, Parallel, and Inexact Newton Method for Large-scale Nonlinear Optimal Control}}, 
+      author={Luke Bhan and Michael W. Mahoney and Sen Na},
+      year={2026},
+      eprint={2609.33206},
+      archivePrefix={arXiv},
+      primaryClass={math.OC},
+      url={https://arxiv.org/abs/2609.33206}, 
+      note={arXiv:2609.33206}
 }
 ```
 
